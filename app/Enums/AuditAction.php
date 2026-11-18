@@ -1,0 +1,139 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Enums;
+
+/**
+ * Canonical catalogue of audit trail events.
+ */
+enum AuditAction: string
+{
+    // Authentication & terminal sessions
+    case USER_LOGIN = 'USER_LOGIN';
+    case USER_LOGIN_FAILED = 'USER_LOGIN_FAILED';
+    case USER_LOGOUT = 'USER_LOGOUT';
+    case TERMINAL_SESSION_STARTED = 'TERMINAL_SESSION_STARTED';
+    case ACCESS_DENIED = 'ACCESS_DENIED';
+
+    // Shifts & cash drawer
+    case SHIFT_OPENED = 'SHIFT_OPENED';
+    case SHIFT_CLOSED = 'SHIFT_CLOSED';
+    case CASH_PAID_IN = 'CASH_PAID_IN';
+    case CASH_PAID_OUT = 'CASH_PAID_OUT';
+
+    // Orders & payments
+    case ORDER_CREATED = 'ORDER_CREATED';
+    case ORDER_HELD = 'ORDER_HELD';
+    case ORDER_RESUMED = 'ORDER_RESUMED';
+    case ORDER_CANCELLED = 'ORDER_CANCELLED';
+    case PAYMENT_PROCESSED = 'PAYMENT_PROCESSED';
+    case TRANSACTION_VOIDED = 'TRANSACTION_VOIDED';
+    case REFUND_PROCESSED = 'REFUND_PROCESSED';
+
+    // Supervisor overrides
+    case DISCOUNT_OVERRIDE = 'DISCOUNT_OVERRIDE';
+    case PRICE_OVERRIDE = 'PRICE_OVERRIDE';
+    case SUPERVISOR_AUTH_FAILED = 'SUPERVISOR_AUTH_FAILED';
+
+    // Inventory & catalog
+    case STOCK_ADJUSTED = 'STOCK_ADJUSTED';
+    case STOCK_OPNAME_COMPLETED = 'STOCK_OPNAME_COMPLETED';
+    case PRODUCT_OUTLET_SETTING_UPDATED = 'PRODUCT_OUTLET_SETTING_UPDATED';
+    case PRODUCT_CREATED = 'PRODUCT_CREATED';
+    case PRODUCT_UPDATED = 'PRODUCT_UPDATED';
+    case OUTLET_TAX_CONFIG_UPDATED = 'OUTLET_TAX_CONFIG_UPDATED';
+    case DISCOUNT_MASTER_UPDATED = 'DISCOUNT_MASTER_UPDATED';
+
+    // Sub-Distributor Operations
+    case OUTLET_CONTEXT_SWITCHED = 'OUTLET_CONTEXT_SWITCHED';
+    case STOCK_TRANSFER_REQUESTED = 'STOCK_TRANSFER_REQUESTED';
+    case STOCK_TRANSFER_APPROVED = 'STOCK_TRANSFER_APPROVED';
+    case STOCK_TRANSFER_SHIPPED = 'STOCK_TRANSFER_SHIPPED';
+    case STOCK_TRANSFER_RECEIVED = 'STOCK_TRANSFER_RECEIVED';
+    case PURCHASE_ORDER_CREATED = 'PURCHASE_ORDER_CREATED';
+    case GOODS_RECEIPT_COMPLETED = 'GOODS_RECEIPT_COMPLETED';
+    case SALES_ORDER_CREATED = 'SALES_ORDER_CREATED';
+    case SALES_ORDER_FULFILLED = 'SALES_ORDER_FULFILLED';
+    case SALES_ORDER_CANCELLED = 'SALES_ORDER_CANCELLED';
+    case SALES_RETURN_PROCESSED = 'SALES_RETURN_PROCESSED';
+    case INVOICE_ISSUED = 'INVOICE_ISSUED';
+    case RECEIVABLE_PAYMENT_RECORDED = 'RECEIVABLE_PAYMENT_RECORDED';
+
+    // Master Data & Batch/Procurement Enhancement
+    case PRODUCT_ARCHIVED = 'PRODUCT_ARCHIVED';
+    case MASTER_DATA_UPDATED = 'MASTER_DATA_UPDATED';
+    case PRICE_LIST_UPDATED = 'PRICE_LIST_UPDATED';
+    case BATCH_UPDATED = 'BATCH_UPDATED';
+    case PURCHASE_REQUEST_CREATED = 'PURCHASE_REQUEST_CREATED';
+    case PURCHASE_REQUEST_APPROVED = 'PURCHASE_REQUEST_APPROVED';
+    case PURCHASE_ORDER_APPROVED = 'PURCHASE_ORDER_APPROVED';
+    case PURCHASE_RETURN_CREATED = 'PURCHASE_RETURN_CREATED';
+
+    // Dynamic Tier Management
+    case TIER_CREATED = 'TIER_CREATED';
+    case TIER_UPDATED = 'TIER_UPDATED';
+    case TIER_DELETED = 'TIER_DELETED';
+    case TIER_PRICE_UPDATED = 'TIER_PRICE_UPDATED';
+
+    // User & Role Management
+    case USER_CREATED = 'USER_CREATED';
+    case USER_UPDATED = 'USER_UPDATED';
+    case USER_DELETED = 'USER_DELETED';
+    case USER_RESTORED = 'USER_RESTORED';
+    case USER_SUSPENDED = 'USER_SUSPENDED';
+    case USER_ACTIVATED = 'USER_ACTIVATED';
+    case USER_PASSWORD_RESET = 'USER_PASSWORD_RESET';
+    case ROLE_CREATED = 'ROLE_CREATED';
+    case ROLE_UPDATED = 'ROLE_UPDATED';
+    case ROLE_DELETED = 'ROLE_DELETED';
+    case ROLE_PERMISSIONS_UPDATED = 'ROLE_PERMISSIONS_UPDATED';
+
+    public function label(): string
+    {
+        return ucwords(strtolower(str_replace('_', ' ', $this->value)));
+    }
+
+    public function category(): string
+    {
+        return match ($this) {
+            self::USER_LOGIN, self::USER_LOGIN_FAILED, self::USER_LOGOUT,
+            self::TERMINAL_SESSION_STARTED, self::OUTLET_CONTEXT_SWITCHED, self::ACCESS_DENIED => 'auth',
+            self::USER_CREATED, self::USER_UPDATED, self::USER_DELETED, self::USER_RESTORED,
+            self::USER_SUSPENDED, self::USER_ACTIVATED, self::USER_PASSWORD_RESET,
+            self::ROLE_CREATED, self::ROLE_UPDATED, self::ROLE_DELETED, self::ROLE_PERMISSIONS_UPDATED => 'users',
+            self::SHIFT_OPENED, self::SHIFT_CLOSED, self::CASH_PAID_IN, self::CASH_PAID_OUT => 'shift',
+            self::ORDER_CREATED, self::ORDER_HELD, self::ORDER_RESUMED, self::ORDER_CANCELLED,
+            self::PAYMENT_PROCESSED, self::TRANSACTION_VOIDED, self::REFUND_PROCESSED,
+            self::SALES_ORDER_CREATED, self::SALES_ORDER_FULFILLED, self::SALES_ORDER_CANCELLED,
+            self::SALES_RETURN_PROCESSED, self::INVOICE_ISSUED, self::RECEIVABLE_PAYMENT_RECORDED => 'sales',
+            self::DISCOUNT_OVERRIDE, self::PRICE_OVERRIDE, self::SUPERVISOR_AUTH_FAILED => 'override',
+            self::STOCK_ADJUSTED, self::STOCK_OPNAME_COMPLETED,
+            self::STOCK_TRANSFER_REQUESTED, self::STOCK_TRANSFER_APPROVED,
+            self::STOCK_TRANSFER_SHIPPED, self::STOCK_TRANSFER_RECEIVED,
+            self::PURCHASE_REQUEST_CREATED, self::PURCHASE_REQUEST_APPROVED,
+            self::PURCHASE_ORDER_CREATED, self::PURCHASE_ORDER_APPROVED,
+            self::GOODS_RECEIPT_COMPLETED, self::PURCHASE_RETURN_CREATED,
+            self::BATCH_UPDATED => 'inventory',
+            self::PRODUCT_OUTLET_SETTING_UPDATED, self::PRODUCT_CREATED, self::PRODUCT_UPDATED,
+            self::PRODUCT_ARCHIVED, self::MASTER_DATA_UPDATED, self::PRICE_LIST_UPDATED,
+            self::OUTLET_TAX_CONFIG_UPDATED, self::DISCOUNT_MASTER_UPDATED,
+            self::TIER_CREATED, self::TIER_UPDATED, self::TIER_DELETED, self::TIER_PRICE_UPDATED => 'catalog',
+        };
+    }
+
+    public function severity(): string
+    {
+        return match ($this) {
+            self::TRANSACTION_VOIDED, self::REFUND_PROCESSED, self::DISCOUNT_OVERRIDE,
+            self::PRICE_OVERRIDE, self::STOCK_ADJUSTED, self::STOCK_OPNAME_COMPLETED,
+            self::USER_SUSPENDED, self::USER_DELETED, self::USER_PASSWORD_RESET,
+            self::ROLE_DELETED, self::ROLE_PERMISSIONS_UPDATED => 'high',
+            self::USER_LOGIN_FAILED, self::SUPERVISOR_AUTH_FAILED, self::ACCESS_DENIED,
+            self::ORDER_CANCELLED, self::CASH_PAID_OUT, self::SHIFT_CLOSED,
+            self::USER_CREATED, self::USER_UPDATED, self::USER_ACTIVATED,
+            self::ROLE_CREATED, self::ROLE_UPDATED => 'medium',
+            default => 'low',
+        };
+    }
+}
