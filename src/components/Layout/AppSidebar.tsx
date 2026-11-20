@@ -427,33 +427,36 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({
     <aside
       className={`${
         collapsed ? 'w-16' : 'w-64'
-      } bg-white border-r border-slate-200 flex flex-col justify-between shrink-0 transition-all duration-200 select-none z-30`}
+      } sticky top-0 h-screen max-h-screen bg-white border-r border-slate-200 flex flex-col shrink-0 overflow-hidden transition-all duration-200 select-none z-30`}
     >
-      <div className="p-3 space-y-3 overflow-y-auto">
-        {/* Top Brand + Active Outlet Identity */}
-        <div
-          className={`flex items-center ${
-            collapsed ? 'justify-center' : 'justify-between'
-          } pb-3 border-b border-slate-100`}
-        >
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-9 h-9 rounded-xl bg-emerald-600 flex items-center justify-center text-white shadow-xs shrink-0">
-              <Store className="w-5 h-5" />
-            </div>
-            {!collapsed && (
-              <div className="min-w-0">
-                <div className="font-extrabold text-sm text-slate-900 tracking-tight truncate">
-                  SiBotol Backoffice
-                </div>
-                <div className="text-[11px] font-bold text-emerald-600 truncate">
-                  {session.active_outlet?.name ?? 'Pilih Outlet'}
-                </div>
-              </div>
-            )}
+      {/* Top Brand + Active Outlet Identity (fixed at top) */}
+      <div
+        className={`shrink-0 flex items-center ${
+          collapsed ? 'justify-center' : 'justify-between'
+        } p-3 border-b border-slate-100`}
+      >
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-9 h-9 rounded-xl bg-emerald-600 flex items-center justify-center text-white shadow-xs shrink-0">
+            <Store className="w-5 h-5" />
           </div>
+          {!collapsed && (
+            <div className="min-w-0">
+              <div className="font-extrabold text-sm text-slate-900 tracking-tight truncate">
+                SiBotol Backoffice
+              </div>
+              <div className="text-[11px] font-bold text-emerald-600 truncate">
+                {session.active_outlet?.name ?? 'Pilih Outlet'}
+              </div>
+            </div>
+          )}
         </div>
+      </div>
 
-        {/* Structured Menu Groups */}
+      {/* Scrollable Menu Groups */}
+      <nav
+        aria-label="Navigasi Utama"
+        className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 space-y-3 sidebar-scroll"
+      >
         {GROUP_HEADERS.map((group, idx) => {
           const items = navItems.filter((i) => i.group === group.key);
           if (items.length === 0) return null;
@@ -482,10 +485,10 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({
             </div>
           );
         })}
-      </div>
+      </nav>
 
-      {/* Bottom Collapse Toggle */}
-      <div className="p-3 border-t border-slate-200 bg-slate-50/60">
+      {/* Bottom Collapse Toggle (fixed at bottom) */}
+      <div className="shrink-0 p-3 border-t border-slate-200 bg-slate-50/60">
         <button
           type="button"
           onClick={onToggleCollapse}

@@ -21,6 +21,12 @@
 }
 
 /* Custom subtle scrollbars for POS grids and cart */
+.sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+  scrollbar-gutter: stable;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
