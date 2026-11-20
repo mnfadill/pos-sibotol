@@ -537,15 +537,56 @@ export interface AuditFilterOptions {
 }
 
 export interface DashboardSummaryResponse {
-  period: 'today' | '7d' | '30d' | 'all';
+  scope: 'all' | 'outlet';
+  selected_outlet_id: number | null;
+  period: 'today' | '7d' | '30d' | 'custom' | 'all';
+  date_from: string | null;
+  date_to: string | null;
+  previous_period_label: string | null;
+  access?: {
+    can_view_all_outlets: boolean;
+    role: string;
+    sections: {
+      sales_analytics: boolean;
+      outlet_comparison: boolean;
+      inventory_overview: boolean;
+      receivables: boolean;
+      shift_summary: boolean;
+      b2b_orders: boolean;
+      payment_breakdown: boolean;
+      audit_feed: boolean;
+    };
+  };
+  available_outlets?: Array<{
+    id: number;
+    code: string;
+    name: string;
+    city?: string | null;
+  }>;
   outlet?: {
     id: number;
     code: string;
     name: string;
     city?: string | null;
-  };
+  } | null;
   active_warehouse?: WarehouseInfo | null;
   kpis: {
+    total_sales: string;
+    previous_total_sales: string | null;
+    sales_growth_pct: number | null;
+    total_transactions: number;
+    previous_total_transactions: number | null;
+    transactions_growth_pct: number | null;
+    total_receivables: string;
+    open_invoices_count: number;
+    overdue_invoices_count: number;
+    overdue_receivables_amount: string;
+    low_stock_count: number;
+    central_warehouse_stock_qty: string;
+    branch_warehouses_stock_qty: string;
+    total_inventory_qty: string;
+    pending_transfers_count: number;
+    total_outlets: number;
     gross_sales: string;
     discount_total: string;
     net_sales: string;
@@ -556,7 +597,6 @@ export interface DashboardSummaryResponse {
     average_order_value: string;
     held_orders_count: number;
     voided_and_refunded_count: number;
-    low_stock_count: number;
     b2b_sales_total?: string;
     b2b_orders_count?: number;
     combined_outlet_revenue?: string;
@@ -565,6 +605,38 @@ export interface DashboardSummaryResponse {
     total_stock_units?: string;
     active_deliveries_count?: number;
   };
+  warehouse_summary?: {
+    central_warehouses: WarehouseInfo[];
+    central_stock_qty: string;
+    branch_stock_qty: string;
+    pending_transfers_count: number;
+    active_deliveries_count: number;
+  };
+  sales_trend: Array<{
+    date: string;
+    label: string;
+    counter_sales: number;
+    b2b_sales: number;
+    total_sales: number;
+    transactions_count: number;
+  }>;
+  outlet_comparison: Array<{
+    outlet_id: number;
+    code: string;
+    name: string;
+    city: string;
+    warehouse_code: string;
+    warehouse_name: string;
+    counter_sales_revenue: string;
+    counter_orders_count: number;
+    b2b_sales_revenue: string;
+    b2b_orders_count: number;
+    total_revenue: string;
+    revenue_share_pct: number;
+    stock_units: string;
+    low_stock_count: number;
+    receivables_balance: string;
+  }>;
   active_shift_summary: ShiftLiveSummary | null;
   payment_breakdown: Array<{
     method: PaymentMethodType;
@@ -587,11 +659,18 @@ export interface DashboardSummaryResponse {
     product_name: string;
     variant_name: string;
     sku: string;
+    outlet_id?: number;
+    outlet_code?: string;
+    outlet_name?: string;
     quantity: string;
     reorder_level: string;
     unit: string;
   }>;
-  recent_orders: OrderRecord[];
+  recent_orders: Array<
+    OrderRecord & {
+      outlet?: { id: number; code: string; name: string } | null;
+    }
+  >;
   recent_sales_orders?: Array<{
     id: number;
     so_number: string;
@@ -605,6 +684,32 @@ export interface DashboardSummaryResponse {
       name: string;
       customer_group: string;
     };
+    outlet?: {
+      id: number;
+      code: string;
+      name: string;
+    };
+  }>;
+  due_invoices?: Array<{
+    id: number;
+    invoice_number: string;
+    status: string;
+    due_date: string;
+    is_overdue: boolean;
+    grand_total: string;
+    balance_due: string;
+    customer?: { code: string; name: string; customer_group: string } | null;
+    outlet?: { code: string; name: string } | null;
+  }>;
+  pending_transfers?: Array<{
+    id: number;
+    transfer_number: string;
+    status: string;
+    requested_at?: string;
+    created_at?: string;
+    source_warehouse?: { code: string; name: string } | null;
+    destination_warehouse?: { code: string; name: string } | null;
+    destination_outlet?: { code: string; name: string } | null;
   }>;
   recent_activities: Array<{
     id: number;

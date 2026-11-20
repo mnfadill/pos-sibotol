@@ -4,7 +4,6 @@ import { AuditLogHistoryPage } from './components/Audit/AuditLogHistoryPage';
 import { CatalogPricingPage } from './components/Catalog/CatalogPricingPage';
 import { TaxAndDiscountMasterPage } from './components/Catalog/TaxAndDiscountMasterPage';
 import { CheckoutScreen } from './components/Checkout/CheckoutScreen';
-import { CompanyDashboardPage } from './components/Dashboard/CompanyDashboardPage';
 import { DashboardPage } from './components/Dashboard/DashboardPage';
 import { AccountsReceivablePage } from './components/Finance/AccountsReceivablePage';
 import { InventoryControlPage } from './components/Inventory/InventoryControlPage';
@@ -127,7 +126,7 @@ export function App() {
       await handleQuickSwitchOutlet(session.available_outlets[0].id);
     }
     setForceTerminalSelection(false);
-    setActiveTab('company_dashboard');
+    setActiveTab('dashboard');
   };
 
   const handleLogout = async () => {
@@ -212,21 +211,12 @@ export function App() {
 
           <main className="flex-1 overflow-x-hidden">
             <ErrorBoundary fallbackTitle="Terjadi Masalah Pada Modul Ini">
-            {(activeTab === 'company_dashboard' || activeTab === 'finance_reports') && (
-              <CompanyDashboardPage
-                onSelectOutletWorkspace={async (outletId) => {
-                  await handleQuickSwitchOutlet(outletId);
-                  setActiveTab('dashboard');
-                }}
-                onBackToOutletSelection={() => setForceTerminalSelection(true)}
-              />
-            )}
-
-            {activeTab === 'dashboard' && session.active_outlet && (
+            {(activeTab === 'dashboard' || activeTab === 'finance_reports') && (
               <DashboardPage
-                outlet={session.active_outlet}
+                session={session}
                 onNavigate={setActiveTab}
                 onOpenShiftModal={() => setShowShiftModal(true)}
+                onSwitchOutletWorkspace={handleQuickSwitchOutlet}
               />
             )}
 

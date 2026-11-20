@@ -40,7 +40,8 @@ Route::prefix('v1')->group(function (): void {
         Route::post('/auth/logout', [AuthController::class, 'logout'])->name('api.auth.logout');
         Route::post('/auth/verify-supervisor-pin', [AuthController::class, 'verifySupervisorPin'])->name('api.auth.verify_pin');
 
-        // Company Consolidated Dashboard & Dynamic Outlet Creation (Super Admin / Owner)
+        // Unified Context-Aware Dashboard & Company Consolidated Endpoints
+        Route::get('/dashboard/summary', [DashboardController::class, 'summary'])->name('api.dashboard.summary');
         Route::get('/company/dashboard', [CompanyDashboardController::class, 'summary'])->name('api.company.dashboard');
         Route::post('/company/outlets', [CompanyDashboardController::class, 'createOutlet'])->name('api.company.outlets.store');
 
@@ -260,9 +261,6 @@ Route::prefix('v1')->group(function (): void {
 
         // Routes requiring an active Outlet Workspace
         Route::middleware(['pos.terminal'])->group(function (): void {
-            // Operational Outlet Dashboard Summary
-            Route::get('/dashboard/summary', [DashboardController::class, 'summary'])->name('api.dashboard.summary');
-
             // Outlet Stock Transfer Request (Branch -> Central Warehouse)
             Route::post('/stock-transfers', [WarehouseAndTransferController::class, 'requestTransfer'])->name('api.transfers.request');
 

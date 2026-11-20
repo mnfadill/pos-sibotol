@@ -399,5 +399,59 @@ final class SubDistributorAcceptanceTest extends TestCase
         $this->assertSame('received', $receiveRes->json('purchase_order.status'));
         $this->assertNotEmpty($receiveRes->json('goods_receipt.gr_number'));
     }
+
+    public function test_unified_dashboard_supports_super_admin_aggregation_and_strict_outlet_isolation(): void
+    {
+        $tangerang = Outlet::query()->withoutGlobalScopes()->where('code', 'TNG-BSD')->firstOrFail();
+        $jakarta = Outlet::query()->withoutGlobalScopes()->where('code', 'JKT-SNP')->firstOrFail();
+
+        // 1. Super Admin login -> unified dashboard defaults to 'all' outlets with comparison & sales trend
+        $adminLogin = $this->postJson('/api/v1/auth/login', [
+            'login' => 'admin',
+            'password' => 'password123',
+        ])->assertOk();
+        $adminHeaders = ['Authorization' => 'Bearer '.(string) $adminLogin->json('token')];
+
+        $allRes = $this->withHeaders($adminHeaders)
+            ->getJson('/api/v1/dashboard/summary?period=30d')
+            ->assertOk();
+
+        $this->assertSame('all', $allRes->json('scope'));
+        $this->assertTrue((bool) $allRes->json('access.can_view_all_outlets'));
+        $this->assertGreaterThanOrEqual(4, count($allRes->json('outlet_comparison')));
+        $this->assertCount(30, $allRes->json('sales_trend'));
+
+        // 2. Super Admin filters by a specific outlet
+        $outletRes = $this->withHeaders($adminHeaders)
+            ->getJson("/api/v1/dashboard/summary?scope=outlet&outlet_id={$tangerang->id}&period=7d")
+            ->assertOk();
+
+        $this->assertSame('outlet', $outletRes->json('scope'));
+        $this->assertSame($tangerang->id, (int) $outletRes->json('selected_outlet_id'));
+        $this->assertCount(7, $outletRes->json('sales_trend'));
+
+        // 3. Cashier Tangerang is restricted to Tangerang only (scope=all is ignored; jakarta returns 403)
+        $this->app['auth']->forgetGuards();
+        $this->flushHeaders();
+
+        $cashierLogin = $this->postJson('/api/v1/auth/login', [
+            'login' => 'kasir.tng',
+            'password' => 'password123',
+        ])->assertOk();
+        $cashierHeaders = ['Authorization' => 'Bearer '.(string) $cashierLogin->json('token')];
+
+        $cashierDash = $this->withHeaders($cashierHeaders)
+            ->getJson('/api/v1/dashboard/summary?scope=all&period=7d')
+            ->assertOk();
+
+        $this->assertSame('outlet', $cashierDash->json('scope'));
+        $this->assertSame($tangerang->id, (int) $cashierDash->json('selected_outlet_id'));
+        $this->assertFalse((bool) $cashierDash->json('access.can_view_all_outlets'));
+
+        $this->withHeaders($cashierHeaders)
+            ->getJson("/api/v1/dashboard/summary?scope=outlet&outlet_id={$jakarta->id}")
+            ->assertStatus(403)
+            ->assertJsonPath('code', 'OUTLET_ACCESS_DENIED');
+    }
 }
 

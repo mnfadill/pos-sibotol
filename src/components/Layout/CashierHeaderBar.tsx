@@ -38,13 +38,9 @@ interface CashierHeaderBarProps {
 }
 
 const TAB_TITLES: Record<ActiveTab, { title: string; subtitle: string }> = {
-  company_dashboard: {
-    title: 'Dashboard Konsolidasi Perusahaan',
-    subtitle: 'Konsolidasi lintas seluruh outlet, Gudang Pusat, dan Piutang Perusahaan',
-  },
   dashboard: {
-    title: 'Dashboard Operasional Outlet',
-    subtitle: 'Ringkasan penjualan Counter, B2B Sales Order, Stok Gudang Cabang & Piutang Outlet',
+    title: 'Dashboard',
+    subtitle: 'Ringkasan performa bisnis, penjualan, stok, dan aktivitas operasional SiBotol',
   },
   checkout: {
     title: 'POS Kasir (Counter Sales)',

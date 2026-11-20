@@ -11,7 +11,6 @@ import {
   ClipboardList,
   CreditCard,
   FileCheck2,
-  Globe,
   History,
   KeyRound,
   Layers,
@@ -38,7 +37,6 @@ import type { UserSession } from '../../types/pos';
 export type ActiveTab =
   // Dashboard & POS Operational
   | 'dashboard'
-  | 'company_dashboard'
   | 'checkout'
   | 'shifts'
   // Master Data
@@ -125,8 +123,6 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({
   const perms = session.user.permissions ?? [];
   const isSuper = session.user.is_super_admin;
 
-  const canViewCompany =
-    isSuper || session.user.can_view_company_dashboard || perms.includes('company.dashboard.view');
   const canViewUserManagement =
     isSuper ||
     perms.includes('users.view') ||
@@ -155,17 +151,6 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({
       icon: LayoutDashboard,
       group: 'dashboard',
     },
-    ...(canViewCompany
-      ? [
-          {
-            id: 'company_dashboard' as const,
-            label: 'Dashboard Pusat',
-            shortLabel: 'Pusat',
-            icon: Globe,
-            group: 'dashboard' as const,
-          },
-        ]
-      : []),
     {
       id: 'checkout',
       label: 'POS Kasir (Counter)',
