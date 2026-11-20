@@ -34,7 +34,7 @@ final class OrderController extends Controller
         $search = $request->string('search')->toString();
 
         $paginator = Order::query()
-            ->with(['items', 'payments', 'cashier:id,name,username', 'terminal:id,code,name'])
+            ->with(['items', 'payments', 'cashier:id,name,username', 'terminal:id,code,name', 'customer:id,code,name,phone,company_name', 'invoice'])
             ->where('outlet_id', $outlet->id)
             ->when($status !== '', static fn ($q) => $q->where('status', $status))
             ->when($search !== '', static function ($q) use ($search): void {
@@ -71,7 +71,7 @@ final class OrderController extends Controller
 
     public function show(Order $order): JsonResponse
     {
-        $order->load(['items', 'payments', 'refunds.items', 'cashier:id,name,username', 'terminal:id,code,name']);
+        $order->load(['items', 'payments', 'refunds.items', 'cashier:id,name,username', 'terminal:id,code,name', 'customer', 'invoice.allocations.customerPayment']);
 
         return response()->json(['order' => $order]);
     }

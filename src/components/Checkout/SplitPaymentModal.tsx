@@ -1,6 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   Banknote,
+  Calendar,
+  CheckCircle2,
+  Clock,
   CreditCard,
   KeyRound,
   Landmark,
@@ -10,10 +14,17 @@ import {
   Smartphone,
   Split,
   Trash2,
+  UserCheck,
+  UserPlus,
 } from 'lucide-react';
 import { api, extractErrorMessage, generateIdempotencyKey } from '../../lib/api';
 import { formatIDR } from '../../lib/format';
-import type { OrderRecord, PaymentLegInput, PaymentMethodType } from '../../types/pos';
+import type {
+  OrderRecord,
+  PaymentLegInput,
+  PaymentMethodType,
+  PaymentSchemeType,
+} from '../../types/pos';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Modal } from '../ui/Modal';
@@ -22,11 +33,22 @@ interface Props {
   isOpen: boolean;
   grandTotal: number;
   requiresSupervisorPin: boolean;
+  selectedCustomer?: {
+    id: number;
+    name: string;
+    code: string;
+    phone?: string | null;
+    company_name?: string | null;
+    payment_term_days?: number;
+  } | null;
+  onRequestSelectCustomer?: () => void;
   onClose: () => void;
   onSubmitCheckout: (
     payments: PaymentLegInput[],
     idempotencyKey: string,
     supervisorPin?: string,
+    paymentScheme?: PaymentSchemeType,
+    dueDate?: string,
   ) => Promise<OrderRecord>;
   onOrderCompleted: (order: OrderRecord) => void;
 }
@@ -56,10 +78,14 @@ export const SplitPaymentModal: React.FC<Props> = ({
   isOpen,
   grandTotal,
   requiresSupervisorPin,
+  selectedCustomer,
+  onRequestSelectCustomer,
   onClose,
   onSubmitCheckout,
   onOrderCompleted,
 }) => {
+  const [paymentScheme, setPaymentScheme] = useState<PaymentSchemeType>('full');
+  const [dueDate, setDueDate] = useState<string>('');
   const [isSplitMode, setIsSplitMode] = useState<boolean>(false);
   const [legs, setLegs] = useState<PaymentLegInput[]>([]);
   const [idempotencyKey, setIdempotencyKey] = useState<string>('');
@@ -69,6 +95,13 @@ export const SplitPaymentModal: React.FC<Props> = ({
   const [error, setError] = useState<string | null>(null);
 
   const roundedGrandTotal = Math.round(grandTotal);
+
+  const computeDefaultDueDate = (termDays?: number): string => {
+    const days = termDays && termDays > 0 ? termDays : 14;
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    return d.toISOString().slice(0, 10);
+  };
 
   // Quick cash suggestions based on grandTotal (Moka POS style)
   const cashDenominations = useMemo(() => {
@@ -87,6 +120,8 @@ export const SplitPaymentModal: React.FC<Props> = ({
 
   useEffect(() => {
     if (isOpen) {
+      setPaymentScheme('full');
+      setDueDate(computeDefaultDueDate(selectedCustomer?.payment_term_days));
       setIsSplitMode(false);
       setLegs([
         {
@@ -106,6 +141,53 @@ export const SplitPaymentModal: React.FC<Props> = ({
       setError(null);
     }
   }, [isOpen, roundedGrandTotal]);
+
+  const handleSelectScheme = (scheme: PaymentSchemeType) => {
+    setPaymentScheme(scheme);
+    setError(null);
+    const primary = legs[0] ?? {
+      id: 'leg-1',
+      method: 'cash' as PaymentMethodType,
+      amount: roundedGrandTotal,
+      tendered_amount: roundedGrandTotal,
+      provider: '',
+      reference_number: '',
+      card_last4: '',
+      qris_payload: '',
+    };
+
+    if (scheme === 'full') {
+      setIsSplitMode(false);
+      setLegs([
+        {
+          ...primary,
+          amount: roundedGrandTotal,
+          tendered_amount: roundedGrandTotal,
+        },
+      ]);
+    } else if (scheme === 'partial') {
+      setIsSplitMode(false);
+      const suggestedDp = Math.max(0, Math.floor(roundedGrandTotal / 2));
+      setLegs([
+        {
+          ...primary,
+          amount: suggestedDp,
+          tendered_amount: suggestedDp,
+        },
+      ]);
+    } else {
+      // Credit / Tempo (0 initial payment)
+      setIsSplitMode(false);
+      setLegs([
+        {
+          ...primary,
+          method: 'cash',
+          amount: 0,
+          tendered_amount: 0,
+        },
+      ]);
+    }
+  };
 
   const appliedSum = legs.reduce((acc, l) => acc + (Number(l.amount) || 0), 0);
   const remainingToAllocate = roundedGrandTotal - appliedSum;
@@ -162,11 +244,18 @@ export const SplitPaymentModal: React.FC<Props> = ({
         ? 'QRIS Standar Indonesia'
         : PROVIDER_PRESETS[method]?.[0] ?? '';
 
+    const targetAmt =
+      paymentScheme === 'tempo'
+        ? 0
+        : paymentScheme === 'partial'
+          ? Math.max(0, Math.min(roundedGrandTotal, legs[0]?.amount ?? Math.floor(roundedGrandTotal / 2)))
+          : roundedGrandTotal;
+
     const newLeg: PaymentLegInput = {
       id: legId,
       method,
-      amount: roundedGrandTotal,
-      tendered_amount: roundedGrandTotal,
+      amount: targetAmt,
+      tendered_amount: targetAmt,
       provider: defaultProvider,
       reference_number: ref,
       card_last4: '',
@@ -221,15 +310,31 @@ export const SplitPaymentModal: React.FC<Props> = ({
     }
   };
 
+  const requiresCustomerSelection =
+    (paymentScheme === 'partial' || paymentScheme === 'tempo' || remainingDebt > 0) &&
+    !selectedCustomer;
+
   const handleProcessPayment = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (requiresCustomerSelection) {
+      setError('Untuk pembayaran Partial (DP) atau Credit / Tempo, pelanggan wajib dipilih terlebih dahulu.');
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
+      const effectiveScheme: PaymentSchemeType =
+        remainingDebt === 0
+          ? 'full'
+          : appliedSum > 0
+            ? 'partial'
+            : 'tempo';
       const order = await onSubmitCheckout(
         legs,
         idempotencyKey,
         supervisorPin ? supervisorPin : undefined,
+        effectiveScheme,
+        remainingDebt > 0 ? dueDate : undefined,
       );
       onClose();
       onOrderCompleted(order);
@@ -263,6 +368,142 @@ export const SplitPaymentModal: React.FC<Props> = ({
             {error}
           </div>
         )}
+
+        {/* Skema Pembayaran: Full Payment / Partial (DP) / Credit (Tempo) */}
+        <div className="space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
+              Pilih Skema Pembayaran
+            </span>
+            {selectedCustomer ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50 border border-blue-200 text-xs font-bold text-[#2563EB]">
+                <UserCheck className="w-3.5 h-3.5" />
+                <span>
+                  {selectedCustomer.name} ({selectedCustomer.code})
+                  {selectedCustomer.phone ? ` • ${selectedCustomer.phone}` : ''}
+                </span>
+              </span>
+            ) : (
+              <span className="text-[11px] font-semibold text-slate-500">
+                Pelanggan: Walk-in (Umum)
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <button
+              type="button"
+              onClick={() => handleSelectScheme('full')}
+              className={`p-3 rounded-xl border text-left transition cursor-pointer flex items-start gap-2.5 ${
+                paymentScheme === 'full' && remainingDebt === 0
+                  ? 'bg-emerald-50 border-[#059669] text-slate-900 ring-2 ring-[#059669]/15'
+                  : 'bg-white border-slate-200 text-slate-700 hover:border-slate-300'
+              }`}
+            >
+              <CheckCircle2
+                className={`w-4 h-4 shrink-0 mt-0.5 ${
+                  paymentScheme === 'full' && remainingDebt === 0
+                    ? 'text-[#059669]'
+                    : 'text-slate-400'
+                }`}
+              />
+              <div>
+                <div className="text-xs font-extrabold">Full Payment / Lunas</div>
+                <div className="text-[10px] text-slate-500">
+                  Bayar penuh {formatIDR(roundedGrandTotal)}
+                </div>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleSelectScheme('partial')}
+              className={`p-3 rounded-xl border text-left transition cursor-pointer flex items-start gap-2.5 ${
+                paymentScheme === 'partial' || (remainingDebt > 0 && appliedSum > 0)
+                  ? 'bg-blue-50 border-[#2563EB] text-slate-900 ring-2 ring-[#2563EB]/15'
+                  : 'bg-white border-slate-200 text-slate-700 hover:border-slate-300'
+              }`}
+            >
+              <CreditCard
+                className={`w-4 h-4 shrink-0 mt-0.5 ${
+                  paymentScheme === 'partial' || (remainingDebt > 0 && appliedSum > 0)
+                    ? 'text-[#2563EB]'
+                    : 'text-slate-400'
+                }`}
+              />
+              <div>
+                <div className="text-xs font-extrabold">Partial Payment / DP</div>
+                <div className="text-[10px] text-slate-500">
+                  Bayar sebagian (DP), sisa masuk piutang
+                </div>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleSelectScheme('tempo')}
+              className={`p-3 rounded-xl border text-left transition cursor-pointer flex items-start gap-2.5 ${
+                paymentScheme === 'tempo' || (remainingDebt > 0 && appliedSum === 0)
+                  ? 'bg-amber-50 border-amber-500 text-slate-900 ring-2 ring-amber-500/15'
+                  : 'bg-white border-slate-200 text-slate-700 hover:border-slate-300'
+              }`}
+            >
+              <Clock
+                className={`w-4 h-4 shrink-0 mt-0.5 ${
+                  paymentScheme === 'tempo' || (remainingDebt > 0 && appliedSum === 0)
+                    ? 'text-amber-600'
+                    : 'text-slate-400'
+                }`}
+              />
+              <div>
+                <div className="text-xs font-extrabold">Credit / Tempo</div>
+                <div className="text-[10px] text-slate-500">
+                  Tagihan tempo (Rp 0 dibayar saat ini)
+                </div>
+              </div>
+            </button>
+          </div>
+
+          {requiresCustomerSelection && (
+            <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-bold text-amber-900">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>
+                  Wajib memilih Pelanggan Terdaftar untuk transaksi Partial Payment (DP) atau Credit / Tempo.
+                </span>
+              </div>
+              {onRequestSelectCustomer && (
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="xs"
+                  icon={<UserPlus className="w-3.5 h-3.5" />}
+                  onClick={() => {
+                    onClose();
+                    onRequestSelectCustomer();
+                  }}
+                >
+                  Pilih / Buat Pelanggan
+                </Button>
+              )}
+            </div>
+          )}
+
+          {remainingDebt > 0 && (
+            <div className="p-3 rounded-xl bg-blue-50/70 border border-blue-200 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-800">
+                <Calendar className="w-4 h-4 text-[#2563EB]" />
+                <span>Tanggal Jatuh Tempo Invoice Piutang:</span>
+              </div>
+              <input
+                type="date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+                className="px-3 py-1.5 rounded-lg bg-white border border-blue-300 text-xs font-bold text-slate-900"
+              />
+            </div>
+          )}
+        </div>
 
         {/* Top Summary Banner & Mode Toggle */}
         <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex flex-wrap items-center justify-between gap-4">
@@ -821,11 +1062,13 @@ export const SplitPaymentModal: React.FC<Props> = ({
             variant="primary"
             size="lg"
             loading={loading}
-            disabled={isOverAllocated}
+            disabled={isOverAllocated || requiresCustomerSelection}
           >
             {remainingDebt > 0
-              ? `Selesaikan & Catat Hutang (${formatIDR(remainingDebt)})`
-              : `Selesaikan Pembayaran (${formatIDR(roundedGrandTotal)})`}
+              ? appliedSum > 0
+                ? `Selesaikan DP ${formatIDR(appliedSum)} & Catat Piutang (${formatIDR(remainingDebt)})`
+                : `Terbitkan Invoice Tempo (${formatIDR(remainingDebt)})`
+              : `Selesaikan Pembayaran Lunas (${formatIDR(roundedGrandTotal)})`}
           </Button>
         </div>
       </form>

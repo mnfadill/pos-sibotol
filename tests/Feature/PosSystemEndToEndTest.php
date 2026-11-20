@@ -471,5 +471,82 @@ final class PosSystemEndToEndTest extends TestCase
             'status' => 'unpaid',
             'paid_total' => '0.00',
         ]);
+
+        // Test Quick Customer Creation with NIK masking, Partial DP + Separate Installment Records & AR Settlement
+        $custRes = $this->withHeaders($headers)
+            ->postJson('/api/v1/customers', [
+                'name' => 'Pak Hendra Agen',
+                'phone' => '081299887766',
+                'company_name' => 'Agen Minuman Hendra',
+                'address' => 'Jl. Melawai No. 10',
+                'nik' => '3174051208900001',
+            ])
+            ->assertCreated();
+
+        $custId = (int) $custRes->json('customer.id');
+        $this->assertSame('3174********0001', $custRes->json('customer.masked_nik'));
+        $this->assertNull($custRes->json('customer.nik'));
+
+        // Search customer by phone
+        $searchRes = $this->withHeaders($headers)
+            ->getJson('/api/v1/customers?search=08129988')
+            ->assertOk();
+        $this->assertCount(1, $searchRes->json('customers'));
+
+        // Checkout with Partial Payment (DP Rp 15,000) linked to customer_id
+        $dpCheckout = $this->withHeaders($headers + ['X-Idempotency-Key' => 'idem-cust-dp-03'])
+            ->postJson('/api/v1/orders/checkout', [
+                'customer_id' => $custId,
+                'payment_scheme' => 'partial',
+                'due_date' => now()->addDays(10)->toDateString(),
+                'items' => [['product_variant_id' => $aren250->id, 'quantity' => 2]],
+                'payments' => [
+                    [
+                        'method' => 'cash',
+                        'amount' => 15000,
+                        'tendered_amount' => 15000,
+                    ],
+                ],
+            ])
+            ->assertCreated();
+
+        $invoiceId = (int) $dpCheckout->json('order.invoice.id');
+        $balanceDue = (float) $dpCheckout->json('order.invoice.balance_due');
+        $this->assertGreaterThan(0, $invoiceId);
+        $this->assertSame('partial', $dpCheckout->json('order.invoice.status'));
+        // Initial DP is stored as its own CustomerPayment & PaymentAllocation record
+        $this->assertCount(1, $dpCheckout->json('order.invoice.allocations'));
+
+        // Overpayment above balance_due is rejected
+        $this->withHeaders($headers)
+            ->postJson('/api/v1/receivables/payments', [
+                'invoice_id' => $invoiceId,
+                'amount' => $balanceDue + 5000,
+                'method' => 'cash',
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'INVOICE_OVERPAYMENT_NOT_ALLOWED');
+
+        // Settle remaining balance (second installment record, does not overwrite initial DP)
+        $settleRes = $this->withHeaders($headers)
+            ->postJson('/api/v1/receivables/payments', [
+                'invoice_id' => $invoiceId,
+                'amount' => $balanceDue,
+                'method' => 'bank_transfer',
+                'reference_number' => 'TRF-LUNAS-01',
+                'idempotency_key' => 'idem-ar-settle-01',
+            ])
+            ->assertCreated();
+
+        $this->assertSame('paid', $settleRes->json('invoice.status'));
+        $this->assertSame('0.00', $settleRes->json('invoice.balance_due'));
+
+        // Customer detail endpoint shows 2 separate payment allocations on the invoice
+        $detailRes = $this->withHeaders($headers)
+            ->getJson("/api/v1/customers/{$custId}")
+            ->assertOk();
+
+        $this->assertSame('3174********0001', $detailRes->json('customer.masked_nik'));
+        $this->assertCount(2, $detailRes->json('invoices.0.allocations'));
     }
 }

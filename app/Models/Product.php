@@ -68,6 +68,17 @@ class Product extends Model
         ];
     }
 
+    protected static function booted(): void
+    {
+        $flush = static function (self $model): void {
+            if ($model->organization_id) {
+                \App\Http\Controllers\Api\CatalogController::flushOrganizationCache((int) $model->organization_id);
+            }
+        };
+        static::saved($flush);
+        static::deleted($flush);
+    }
+
     public function getStatusAttribute(): string
     {
         return (bool) ($this->attributes['is_active'] ?? true) ? 'active' : 'inactive';
@@ -193,11 +204,22 @@ class Product extends Model
         return $query->where(static function (Builder $q) use ($like, $term): void {
             $q->whereRaw('LOWER(products.name) LIKE ?', [$like])
                 ->orWhereRaw('LOWER(products.sku) LIKE ?', [$like])
-                ->orWhereHas('variants', static function (Builder $v) use ($like, $term): void {
-                    $v->whereRaw('LOWER(sku) LIKE ?', [$like])->orWhere('barcode', $term);
+                ->orWhereRaw('LOWER(COALESCE(products.default_barcode, \'\')) LIKE ?', [$like])
+                ->orWhereHas('brand', static function (Builder $br) use ($like): void {
+                    $br->whereRaw('LOWER(name) LIKE ?', [$like])
+                        ->orWhereRaw('LOWER(code) LIKE ?', [$like]);
                 })
-                ->orWhereHas('barcodes', static function (Builder $b) use ($term): void {
-                    $b->where('barcode', $term);
+                ->orWhereHas('variants', static function (Builder $v) use ($like, $term): void {
+                    $v->whereRaw('LOWER(sku) LIKE ?', [$like])
+                        ->orWhere('barcode', $term)
+                        ->orWhereRaw('LOWER(COALESCE(barcode, \'\')) LIKE ?', [$like]);
+                })
+                ->orWhereHas('barcodes', static function (Builder $b) use ($term, $like): void {
+                    $b->where('barcode', $term)
+                        ->orWhereRaw('LOWER(barcode) LIKE ?', [$like]);
+                })
+                ->orWhereHas('productUnits', static function (Builder $pu) use ($term): void {
+                    $pu->where('barcode', $term);
                 });
         });
     }

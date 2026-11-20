@@ -37,9 +37,10 @@ final class AccountsReceivableController extends Controller
 
         $invoicesQuery = Invoice::query()->withoutGlobalScopes()
             ->with([
-                'customer:id,code,name,customer_group,credit_limit,outstanding_balance',
+                'customer:id,code,name,phone,company_name,customer_group,credit_limit,outstanding_balance',
                 'outlet:id,code,name,city',
                 'salesOrder:id,so_number',
+                'order:id,order_number,completed_at,payment_term,due_date',
                 'allocations.customerPayment',
                 'creator:id,name,username',
                 'updater:id,name,username',

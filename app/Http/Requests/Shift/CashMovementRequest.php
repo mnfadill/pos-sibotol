@@ -12,7 +12,20 @@ final class CashMovementRequest extends FormRequest
 {
     public function authorize(): bool
     {
-        return $this->user()?->hasPermission('cash_movements.create') ?? false;
+        $user = $this->user();
+        if ($user === null || ! $user->is_active) {
+            return false;
+        }
+
+        return $user->hasAnyPermission('cash_movements.create', 'shifts.operate', 'shifts.manage', 'pos.checkout')
+            || $user->hasRole(
+                \App\Enums\RoleName::Cashier,
+                \App\Enums\RoleName::Supervisor,
+                \App\Enums\RoleName::OutletManager,
+                \App\Enums\RoleName::AdminOutlet,
+                \App\Enums\RoleName::Owner,
+                \App\Enums\RoleName::SuperAdmin,
+            );
     }
 
     /** @return array<string, mixed> */

@@ -352,5 +352,52 @@ final class SubDistributorAcceptanceTest extends TestCase
 
         $this->assertSame('PROMO-SUBDIST-25K', $newDiscRes->json('discount.code'));
     }
+
+    public function test_receive_purchase_order_goods_succeeds_when_variant_and_product_soft_deleted(): void
+    {
+        $tangerang = Outlet::query()->withoutGlobalScopes()->where('code', 'TNG-BSD')->firstOrFail();
+        $whTangerang = Warehouse::query()->withoutGlobalScopes()->where('code', 'WH-TNG')->firstOrFail();
+        $variant = ProductVariant::query()->withoutGlobalScopes()->with('product')->where('sku', 'SBT-AREN-250')->firstOrFail();
+        $supplier = \App\Models\Supplier::query()->withoutGlobalScopes()->firstOrFail();
+
+        $loginRes = $this->postJson('/api/v1/auth/login', [
+            'login' => 'admin',
+            'password' => 'password123',
+        ])->assertOk();
+        $headers = ['Authorization' => 'Bearer '.(string) $loginRes->json('token')];
+
+        $this->withHeaders($headers)->postJson('/api/v1/auth/select-outlet', [
+            'outlet_id' => $tangerang->id,
+        ])->assertOk();
+
+        // 1. Create a Purchase Order
+        $poRes = $this->withHeaders($headers)->postJson('/api/v1/procurement/purchase-orders', [
+            'supplier_id' => $supplier->id,
+            'target_warehouse_id' => $whTangerang->id,
+            'items' => [
+                [
+                    'product_variant_id' => $variant->id,
+                    'ordered_qty' => 10,
+                    'unit_cost' => 15000,
+                ],
+            ],
+        ])->assertCreated();
+
+        $poId = (int) $poRes->json('purchase_order.id');
+
+        // 2. Soft-delete BOTH the variant and its parent product before goods are received
+        $variant->delete();
+        $variant->product->delete();
+
+        // 3. Receive goods for the PO — should succeed without "Attempt to read property 'product' on null"
+        $receiveRes = $this->withHeaders($headers)
+            ->postJson("/api/v1/procurement/purchase-orders/{$poId}/receive", [
+                'delivery_note_number' => 'SJ-SOFTDEL-001',
+            ])
+            ->assertOk();
+
+        $this->assertSame('received', $receiveRes->json('purchase_order.status'));
+        $this->assertNotEmpty($receiveRes->json('goods_receipt.gr_number'));
+    }
 }
 

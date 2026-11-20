@@ -46,6 +46,14 @@ class ProductUnit extends Model
                 $unit->organization_id = Product::query()->withoutGlobalScopes()->where('id', $unit->product_id)->value('organization_id');
             }
         });
+        $flush = static function (self $model): void {
+            if ($model->organization_id) {
+                \App\Services\PosCatalogCacheService::bumpMetadata((int) $model->organization_id);
+                \App\Services\PosCatalogCacheService::bumpPricing((int) $model->organization_id);
+            }
+        };
+        static::saved($flush);
+        static::deleted($flush);
     }
     public function setIsBaseUnitAttribute($value): void
     {

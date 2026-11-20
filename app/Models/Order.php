@@ -11,6 +11,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
  * @property int $id
@@ -129,6 +130,18 @@ class Order extends Model
     public function shift(): BelongsTo
     {
         return $this->belongsTo(CashierShift::class, 'cashier_shift_id');
+    }
+
+    /** @return BelongsTo<Customer, $this> */
+    public function customer(): BelongsTo
+    {
+        return $this->belongsTo(Customer::class, 'customer_id')->withoutGlobalScopes();
+    }
+
+    /** @return HasOne<Invoice, $this> */
+    public function invoice(): HasOne
+    {
+        return $this->hasOne(Invoice::class, 'order_id')->withoutGlobalScopes();
     }
 
     /**

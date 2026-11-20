@@ -11,6 +11,7 @@ use App\Http\Controllers\Controller;
 use App\Models\GoodsReceipt;
 use App\Models\GoodsReceiptItem;
 use App\Models\OutletInventory;
+use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\PurchaseInvoice;
 use App\Models\PurchaseOrder;
@@ -381,7 +382,12 @@ final class ProcurementController extends Controller
         $user = $this->context->requireUser();
 
         $po = PurchaseOrder::query()->withoutGlobalScopes()
-            ->with(['items.variant.product', 'targetWarehouse', 'supplier'])
+            ->with([
+                'items.variant' => static fn ($q) => $q->withoutGlobalScopes()->withTrashed(),
+                'items.variant.product' => static fn ($q) => $q->withoutGlobalScopes()->withTrashed(),
+                'targetWarehouse',
+                'supplier',
+            ])
             ->where('organization_id', $user->organization_id)
             ->findOrFail($poId);
 
@@ -463,6 +469,17 @@ final class ProcurementController extends Controller
                 $basePurchaseUnitCost = ((float) $poItem->unit_cost) / ((float) $factor);
                 $landedBaseUnitCost = number_format($basePurchaseUnitCost + ($allocatedAdditional / $orderedBaseQty), 2, '.', '');
 
+                $variant = $poItem->variant ?? ProductVariant::query()
+                    ->withoutGlobalScopes()
+                    ->withTrashed()
+                    ->with(['product' => static fn ($q) => $q->withoutGlobalScopes()->withTrashed()])
+                    ->find($poItem->product_variant_id);
+                $product = $variant?->product ?? Product::query()
+                    ->withoutGlobalScopes()
+                    ->withTrashed()
+                    ->find($poItem->product_id);
+                $resolvedUomCode = (string) ($poItem->uom_code ?? $product?->unit ?? 'PCS');
+
                 // Receive into InventoryBatch if batch_number provided or product tracks batch/expiry
                 $batchNumber = $override['batch_number'] ?? null;
                 $expiryDate = $override['expiry_date'] ?? null;
@@ -471,9 +488,12 @@ final class ProcurementController extends Controller
 
                 $batchModel = null;
                 if (
-                    ($batchNumber !== null && trim((string) $batchNumber) !== '')
-                    || $poItem->variant->product->track_batch
-                    || $poItem->variant->product->track_expiry
+                    $variant !== null
+                    && (
+                        ($batchNumber !== null && trim((string) $batchNumber) !== '')
+                        || (bool) ($product?->track_batch ?? false)
+                        || (bool) ($product?->track_expiry ?? false)
+                    )
                 ) {
                     $effectiveBatchNo = ($batchNumber !== null && trim((string) $batchNumber) !== '')
                         ? (string) $batchNumber
@@ -483,7 +503,7 @@ final class ProcurementController extends Controller
                         organizationId: (int) $user->organization_id,
                         warehouseId: (int) $po->target_warehouse_id,
                         outletId: $po->outlet_id ? (int) $po->outlet_id : null,
-                        variant: $poItem->variant,
+                        variant: $variant,
                         batchNumber: $effectiveBatchNo,
                         acceptedBaseQty: $acceptedBaseQty,
                         damagedBaseQty: $damagedBaseQty,
@@ -501,7 +521,7 @@ final class ProcurementController extends Controller
                     'purchase_order_item_id' => $poItem->id,
                     'product_variant_id' => $poItem->product_variant_id,
                     'batch_id' => $batchModel?->id,
-                    'uom_code' => $poItem->uom_code ?? $poItem->variant->product->unit ?? 'PCS',
+                    'uom_code' => $resolvedUomCode,
                     'conversion_factor' => $factor,
                     'batch_number' => $batchModel?->batch_number ?? $batchNumber,
                     'manufacturing_date' => $mfgDate,
@@ -532,16 +552,18 @@ final class ProcurementController extends Controller
                 $afterDamagedQty = Quantity::add($beforeDamagedQty, $damagedBaseQty);
 
                 // Update Moving Weighted Average Cost (HPP)
-                $this->pricing->applyMovingAverageCost(
-                    variant: $poItem->variant,
-                    existingBaseQty: $beforeWhQty,
-                    receivedBaseQty: $acceptedBaseQty,
-                    landedBaseUnitCost: $landedBaseUnitCost,
-                    warehouseId: (int) $po->target_warehouse_id,
-                    outletId: $po->outlet_id ? (int) $po->outlet_id : null,
-                    userId: $user->id,
-                    reason: sprintf('Goods Receipt %s (%s)', $receipt->gr_number, $po->po_number),
-                );
+                if ($variant !== null) {
+                    $this->pricing->applyMovingAverageCost(
+                        variant: $variant,
+                        existingBaseQty: $beforeWhQty,
+                        receivedBaseQty: $acceptedBaseQty,
+                        landedBaseUnitCost: $landedBaseUnitCost,
+                        warehouseId: (int) $po->target_warehouse_id,
+                        outletId: $po->outlet_id ? (int) $po->outlet_id : null,
+                        userId: $user->id,
+                        reason: sprintf('Goods Receipt %s (%s)', $receipt->gr_number, $po->po_number),
+                    );
+                }
 
                 if ($whInv === null) {
                     WarehouseInventory::query()->withoutGlobalScopes()->create([
@@ -609,7 +631,7 @@ final class ProcurementController extends Controller
                     userId: $user->id,
                     notes: sprintf('Goods Receipt %s (%s)', $receipt->gr_number, $po->po_number),
                     batchId: $batchModel?->id,
-                    uomCode: (string) ($poItem->uom_code ?? $poItem->variant->product->unit ?? 'PCS'),
+                    uomCode: $resolvedUomCode,
                     uomQuantity: $acceptedUomQty,
                     conversionFactor: $factor,
                     unitCost: $landedBaseUnitCost,
@@ -692,7 +714,8 @@ final class ProcurementController extends Controller
 
             foreach ($validated['items'] as $row) {
                 $variant = ProductVariant::query()->withoutGlobalScopes()
-                    ->with('product')
+                    ->withTrashed()
+                    ->with(['product' => static fn ($q) => $q->withoutGlobalScopes()->withTrashed()])
                     ->findOrFail((int) $row['product_variant_id']);
 
                 $qty = Quantity::normalize($row['quantity']);
@@ -704,7 +727,7 @@ final class ProcurementController extends Controller
                     '_variant' => $variant,
                     'product_id' => $variant->product_id,
                     'product_variant_id' => $variant->id,
-                    'uom_code' => $variant->product->unit ?? 'PCS',
+                    'uom_code' => $variant->product?->unit ?? 'PCS',
                     'quantity' => $qty,
                     'unit_cost' => number_format($cost, 2, '.', ''),
                     'line_total' => number_format($lineTotal, 2, '.', ''),

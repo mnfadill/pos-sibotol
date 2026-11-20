@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import {
   CheckCircle2,
+  Eye,
+  EyeOff,
+  FileText,
   Plus,
   RefreshCw,
   ShoppingBag,
@@ -10,11 +13,12 @@ import {
 } from 'lucide-react';
 import { api, extractErrorMessage } from '../../lib/api';
 import { formatDateTime, formatIDR, formatQty } from '../../lib/format';
-import type { DynamicTier, ProductCatalog } from '../../types/pos';
+import type { DynamicTier, OrderRecord, ProductCatalog } from '../../types/pos';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
 import { Modal } from '../ui/Modal';
+import { SearchableSelect } from '../ui/SearchableSelect';
 import { useToast } from '../ui/ToastProvider';
 
 interface CustomerRecord {
@@ -23,6 +27,10 @@ interface CustomerRecord {
   code: string;
   name: string;
   company_name?: string | null;
+  masked_nik?: string | null;
+  has_nik?: boolean;
+  can_reveal_nik?: boolean;
+  raw_nik?: string | null;
   customer_group: string;
   pricing_tier: string;
   tier_id?: number | null;
@@ -102,11 +110,67 @@ export const SalesOrdersAndCustomersPage: React.FC<Props> = ({
   const [selectedTierId, setSelectedTierId] = useState<number | null>(null);
   const [tiers, setTiers] = useState<DynamicTier[]>([]);
   const [custPhone, setCustPhone] = useState<string>('');
+  const [custCompany, setCustCompany] = useState<string>('');
+  const [custNik, setCustNik] = useState<string>('');
   const [custCity, setCustCity] = useState<string>('');
   const [custAddress, setCustAddress] = useState<string>('');
   const [custCreditLimit, setCustCreditLimit] = useState<string>('25000000');
   const [custTermDays, setCustTermDays] = useState<string>('30');
   const [submittingCust, setSubmittingCust] = useState<boolean>(false);
+
+  // Customer Detail & History Modal
+  const [showDetailModal, setShowDetailModal] = useState<boolean>(false);
+  const [loadingDetail, setLoadingDetail] = useState<boolean>(false);
+  const [revealedNik, setRevealedNik] = useState<string | null>(null);
+  const [detailData, setDetailData] = useState<{
+    customer: CustomerRecord;
+    invoices: Array<{
+      id: number;
+      invoice_number: string;
+      status: string;
+      issue_date: string;
+      due_date: string;
+      grand_total: string;
+      paid_total: string;
+      balance_due: string;
+      allocations?: Array<{
+        id: number;
+        amount: string;
+        customer_payment?: {
+          id: number;
+          payment_number: string;
+          method: string;
+          amount: string;
+          payment_date: string;
+          notes?: string | null;
+        } | null;
+      }>;
+    }>;
+    orders: OrderRecord[];
+  } | null>(null);
+
+  const openCustomerDetail = async (customerId: number, reveal = false) => {
+    setShowDetailModal(true);
+    setLoadingDetail(true);
+    if (!reveal) setRevealedNik(null);
+    try {
+      const res = await api.get<NonNullable<typeof detailData>>(`/customers/${customerId}`, {
+        params: { reveal_nik: reveal ? 1 : 0 },
+      });
+      setDetailData(res.data);
+      if (reveal && res.data.customer.raw_nik) {
+        setRevealedNik(res.data.customer.raw_nik);
+      }
+    } catch (err) {
+      toast({
+        type: 'error',
+        title: 'Gagal memuat detail pelanggan',
+        description: extractErrorMessage(err),
+      });
+    } finally {
+      setLoadingDetail(false);
+    }
+  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -283,12 +347,14 @@ export const SalesOrdersAndCustomersPage: React.FC<Props> = ({
     setSubmittingCust(true);
     try {
       await api.post('/customers', {
-        code: custCode.trim().toUpperCase(),
+        code: custCode.trim().toUpperCase() || undefined,
         name: custName.trim(),
+        company_name: custCompany.trim() || custName.trim(),
+        nik: custNik.trim() || undefined,
         customer_group: custGroup,
         pricing_tier: custTier,
         tier_id: selectedTierId ?? undefined,
-        phone: custPhone || undefined,
+        phone: custPhone,
         city: custCity || undefined,
         address: custAddress || undefined,
         credit_limit: Number(custCreditLimit),
@@ -302,6 +368,9 @@ export const SalesOrdersAndCustomersPage: React.FC<Props> = ({
       setShowCustModal(false);
       setCustCode('');
       setCustName('');
+      setCustCompany('');
+      setCustNik('');
+      setCustPhone('');
       fetchData();
     } catch (err) {
       toast({
@@ -318,6 +387,11 @@ export const SalesOrdersAndCustomersPage: React.FC<Props> = ({
     p.variants.map((v) => ({
       id: v.id,
       label: `${p.name} - ${v.name} (${v.sku})`,
+      productName: p.name,
+      variantName: v.name,
+      sku: v.sku,
+      barcode: v.barcode ?? '',
+      stock: `${formatQty(v.stock_quantity)} ${p.unit || 'PCS'}`,
     })),
   );
 
@@ -497,11 +571,12 @@ export const SalesOrdersAndCustomersPage: React.FC<Props> = ({
                 <tr className="border-b border-slate-200 bg-slate-50 text-xs font-bold uppercase text-slate-500">
                   <th className="py-3 px-4">Kode & Nama Pelanggan</th>
                   <th className="py-3 px-4">Segmen & Tier Harga</th>
-                  <th className="py-3 px-4">Kota & Kontak</th>
+                  <th className="py-3 px-4">Kontak & NIK (Masked)</th>
                   <th className="py-3 px-4 text-right">Termin (TOP)</th>
                   <th className="py-3 px-4 text-right">Credit Limit</th>
                   <th className="py-3 px-4 text-right">Piutang Berjalan (AR)</th>
                   <th className="py-3 px-4 text-right">Sisa Plafon Kredit</th>
+                  <th className="py-3 px-4 text-right">Aksi</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -514,6 +589,9 @@ export const SalesOrdersAndCustomersPage: React.FC<Props> = ({
                       <td className="py-3.5 px-4">
                         <div className="font-mono text-xs font-bold text-blue-600">{c.code}</div>
                         <div className="font-bold text-slate-900">{c.name}</div>
+                        {c.company_name && c.company_name !== c.name && (
+                          <div className="text-xs text-slate-500">{c.company_name}</div>
+                        )}
                       </td>
                       <td className="py-3.5 px-4">
                         <Badge variant="info">{c.customer_group.toUpperCase()}</Badge>
@@ -522,8 +600,13 @@ export const SalesOrdersAndCustomersPage: React.FC<Props> = ({
                         </div>
                       </td>
                       <td className="py-3.5 px-4 text-xs text-slate-600">
-                        <div>{c.city || '-'}</div>
-                        <div>{c.phone || '-'}</div>
+                        <div className="font-semibold text-slate-800">{c.phone || '-'}</div>
+                        <div>{c.city || c.address || '-'}</div>
+                        {c.masked_nik && (
+                          <div className="font-mono text-[11px] text-slate-500">
+                            NIK: {c.masked_nik}
+                          </div>
+                        )}
                       </td>
                       <td className="py-3.5 px-4 text-right font-semibold text-slate-700">
                         {c.payment_term_days} Hari
@@ -536,6 +619,16 @@ export const SalesOrdersAndCustomersPage: React.FC<Props> = ({
                       </td>
                       <td className="py-3.5 px-4 text-right font-extrabold text-emerald-700 tabular-nums">
                         {formatIDR(remaining)}
+                      </td>
+                      <td className="py-3.5 px-4 text-right">
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          leftIcon={<FileText className="w-3.5 h-3.5" />}
+                          onClick={() => openCustomerDetail(c.id)}
+                        >
+                          Detail & Riwayat
+                        </Button>
                       </td>
                     </tr>
                   );
@@ -606,25 +699,27 @@ export const SalesOrdersAndCustomersPage: React.FC<Props> = ({
           </div>
 
           <div>
-            <label className="block text-xs font-bold text-slate-700 mb-1">Produk / Varian</label>
-            <select
+            <label className="block text-xs font-bold text-slate-700 mb-1">
+              Produk / Varian (Ketik Nama / SKU atau Klik Daftar)
+            </label>
+            <SearchableSelect
               value={selectedVariantId}
-              onChange={(e) => {
-                const nextId = Number(e.target.value);
+              onChange={(nextId) => {
                 setSelectedVariantId(nextId);
                 const foundProd = products.find((p) => p.variants.some((v) => v.id === nextId));
                 if (foundProd) {
                   setSelectedSoUomCode((foundProd.unit || 'BTL').toUpperCase());
                 }
               }}
-              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 text-sm bg-white"
-            >
-              {allVariants.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.label}
-                </option>
-              ))}
-            </select>
+              placeholder="Ketik nama barang / SKU atau pilih dari daftar..."
+              options={allVariants.map((v) => ({
+                value: v.id,
+                label: `${v.productName} (${v.variantName})`,
+                sublabel: `SKU: ${v.sku}`,
+                badge: `Stok: ${v.stock}`,
+                searchKeywords: `${v.productName} ${v.variantName} ${v.sku} ${v.barcode}`,
+              }))}
+            />
           </div>
 
           {selectedVariantEntry && (
@@ -808,6 +903,34 @@ export const SalesOrdersAndCustomersPage: React.FC<Props> = ({
 
           <div className="grid grid-cols-2 gap-3">
             <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                No. HP / Telepon <span className="text-rose-600">*</span>
+              </label>
+              <input
+                type="text"
+                required
+                value={custPhone}
+                onChange={(e) => setCustPhone(e.target.value)}
+                placeholder="0812-xxxx-xxxx"
+                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                Nama Usaha / Toko
+              </label>
+              <input
+                type="text"
+                value={custCompany}
+                onChange={(e) => setCustCompany(e.target.value)}
+                placeholder="Toko Agen Sejahtera"
+                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">Kota</label>
               <input
                 type="text"
@@ -818,13 +941,16 @@ export const SalesOrdersAndCustomersPage: React.FC<Props> = ({
               />
             </div>
             <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">No. Telepon</label>
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                NIK / KTP (Opsional — Terlindungi)
+              </label>
               <input
                 type="text"
-                value={custPhone}
-                onChange={(e) => setCustPhone(e.target.value)}
-                placeholder="0812-xxxx-xxxx"
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm"
+                maxLength={20}
+                value={custNik}
+                onChange={(e) => setCustNik(e.target.value.replace(/\D/g, ''))}
+                placeholder="16 digit NIK KTP"
+                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm font-mono"
               />
             </div>
           </div>
@@ -848,6 +974,156 @@ export const SalesOrdersAndCustomersPage: React.FC<Props> = ({
             </Button>
           </div>
         </form>
+      </Modal>
+
+      {/* Modal Detail Pelanggan, Histori Transaksi & Pembayaran */}
+      <Modal
+        isOpen={showDetailModal}
+        onClose={() => setShowDetailModal(false)}
+        title={detailData ? `Detail Pelanggan • ${detailData.customer.name}` : 'Detail Pelanggan'}
+        subtitle="Identitas pelanggan, proteksi NIK/KTP, riwayat transaksi POS & histori cicilan invoice"
+        maxWidth="3xl"
+      >
+        {loadingDetail || !detailData ? (
+          <div className="py-10 text-center text-xs text-slate-500">
+            Memuat riwayat transaksi dan pembayaran pelanggan...
+          </div>
+        ) : (
+          <div className="space-y-4 text-xs">
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <div className="text-[10px] font-bold uppercase text-slate-400">Pelanggan</div>
+                <div className="text-sm font-extrabold text-slate-900">
+                  {detailData.customer.name}
+                </div>
+                <div className="font-mono text-slate-600">{detailData.customer.code}</div>
+                {detailData.customer.company_name && (
+                  <div className="text-slate-600">{detailData.customer.company_name}</div>
+                )}
+              </div>
+              <div>
+                <div className="text-[10px] font-bold uppercase text-slate-400">
+                  Kontak & NIK/KTP
+                </div>
+                <div className="font-semibold text-slate-800">
+                  HP: {detailData.customer.phone || '-'}
+                </div>
+                <div className="text-slate-600">Alamat: {detailData.customer.address || '-'}</div>
+                <div className="flex items-center gap-1.5 mt-1">
+                  <span>NIK:</span>
+                  <span className="font-mono font-bold">
+                    {revealedNik || detailData.customer.masked_nik || 'Tidak diisi'}
+                  </span>
+                  {detailData.customer.has_nik && detailData.customer.can_reveal_nik && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (revealedNik) {
+                          setRevealedNik(null);
+                        } else {
+                          openCustomerDetail(detailData.customer.id, true);
+                        }
+                      }}
+                      className="text-blue-600 hover:underline inline-flex items-center gap-0.5 font-semibold cursor-pointer"
+                    >
+                      {revealedNik ? (
+                        <>
+                          <EyeOff className="w-3 h-3" />
+                          <span>Sembunyikan</span>
+                        </>
+                      ) : (
+                        <>
+                          <Eye className="w-3 h-3" />
+                          <span>Lihat</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="sm:text-right">
+                <div className="text-[10px] font-bold uppercase text-slate-400">
+                  Saldo Piutang (AR)
+                </div>
+                <div className="text-base font-black text-amber-700 tabular-nums">
+                  {formatIDR(detailData.customer.outstanding_balance)}
+                </div>
+                <div className="text-slate-500">
+                  Credit Limit: {formatIDR(detailData.customer.credit_limit)}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="font-bold text-slate-800 uppercase">
+                Riwayat Invoice & Cicilan ({detailData.invoices.length})
+              </div>
+              {detailData.invoices.length === 0 ? (
+                <div className="p-4 text-center text-slate-400 bg-slate-50 rounded-xl border border-slate-200">
+                  Belum ada invoice untuk pelanggan ini.
+                </div>
+              ) : (
+                <div className="max-h-56 overflow-y-auto space-y-2">
+                  {detailData.invoices.map((inv) => (
+                    <div
+                      key={inv.id}
+                      className="p-3 rounded-xl bg-white border border-slate-200 space-y-1.5"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="font-mono font-bold text-slate-900">
+                            {inv.invoice_number}
+                          </span>{' '}
+                          <Badge
+                            variant={
+                              inv.status === 'paid'
+                                ? 'success'
+                                : inv.status === 'partial'
+                                  ? 'info'
+                                  : 'warning'
+                            }
+                          >
+                            {inv.status.toUpperCase()}
+                          </Badge>
+                          <span className="ml-2 text-slate-500">
+                            Jatuh Tempo: {inv.due_date}
+                          </span>
+                        </div>
+                        <div className="text-right tabular-nums">
+                          <span className="text-slate-500">
+                            Total: {formatIDR(inv.grand_total)} • Dibayar:{' '}
+                            {formatIDR(inv.paid_total)} •{' '}
+                          </span>
+                          <strong className="text-rose-600">
+                            Sisa: {formatIDR(inv.balance_due)}
+                          </strong>
+                        </div>
+                      </div>
+                      {inv.allocations && inv.allocations.length > 0 && (
+                        <div className="pl-2 border-l-2 border-emerald-300 space-y-1">
+                          {inv.allocations.map((a) => (
+                            <div
+                              key={a.id}
+                              className="flex justify-between text-[11px] text-slate-600"
+                            >
+                              <span>
+                                {a.customer_payment?.payment_number} •{' '}
+                                {a.customer_payment?.payment_date} ({a.customer_payment?.method})
+                              </span>
+                              <span className="font-bold text-emerald-700">
+                                +{formatIDR(a.amount)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   );

@@ -40,6 +40,17 @@ class Tier extends Model
         'status',
     ];
 
+    protected static function booted(): void
+    {
+        $flush = static function (self $model): void {
+            if ($model->organization_id) {
+                \App\Http\Controllers\Api\CatalogController::flushOrganizationCache((int) $model->organization_id);
+            }
+        };
+        static::saved($flush);
+        static::deleted($flush);
+    }
+
     protected function casts(): array
     {
         return [

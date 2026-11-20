@@ -80,6 +80,12 @@ class Invoice extends Model
         return $this->belongsTo(SalesOrder::class)->withoutGlobalScopes();
     }
 
+    /** @return BelongsTo<Order, $this> */
+    public function order(): BelongsTo
+    {
+        return $this->belongsTo(Order::class)->withoutGlobalScopes();
+    }
+
     /** @return HasMany<PaymentAllocation, $this> */
     public function allocations(): HasMany
     {

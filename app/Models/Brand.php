@@ -23,6 +23,17 @@ class Brand extends Model
         'is_active',
     ];
 
+    protected static function booted(): void
+    {
+        $flush = static function (self $model): void {
+            if ($model->organization_id) {
+                \App\Services\PosCatalogCacheService::bumpMetadata((int) $model->organization_id);
+            }
+        };
+        static::saved($flush);
+        static::deleted($flush);
+    }
+
     protected function casts(): array
     {
         return [

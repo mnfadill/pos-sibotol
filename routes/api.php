@@ -269,7 +269,8 @@ Route::prefix('v1')->group(function (): void {
             // B2B Customers, Credit Control, Sales Orders, Cancel, Deliveries & Sales Returns
             Route::get('/customers', [CustomerAndSalesOrderController::class, 'customers'])->name('api.customers.index');
             Route::post('/customers', [CustomerAndSalesOrderController::class, 'storeCustomer'])->name('api.customers.store');
-            Route::put('/customers/{customerId}', [CustomerAndSalesOrderController::class, 'updateCustomer'])->name('api.customers.update');
+            Route::get('/customers/{customerId}', [CustomerAndSalesOrderController::class, 'showCustomer'])->whereNumber('customerId')->name('api.customers.show');
+            Route::put('/customers/{customerId}', [CustomerAndSalesOrderController::class, 'updateCustomer'])->whereNumber('customerId')->name('api.customers.update');
             Route::get('/sales-orders', [CustomerAndSalesOrderController::class, 'salesOrders'])->name('api.sales_orders.index');
             Route::post('/sales-orders', [CustomerAndSalesOrderController::class, 'storeSalesOrder'])->name('api.sales_orders.store');
             Route::post('/sales-orders/{salesOrderId}/cancel', [CustomerAndSalesOrderController::class, 'cancelSalesOrder'])->name('api.sales_orders.cancel');

@@ -158,8 +158,29 @@ class User extends Authenticatable
             ->all();
     }
 
+    public function hasAnyPermission(PermissionEnum|string ...$permissions): bool
+    {
+        if ($this->isSuperAdmin()) {
+            return true;
+        }
+
+        $granted = $this->permissionNames();
+        foreach ($permissions as $permission) {
+            $name = $permission instanceof PermissionEnum ? $permission->value : $permission;
+            if (in_array($name, $granted, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public function hasPermission(PermissionEnum|string $permission): bool
     {
+        if ($this->isSuperAdmin()) {
+            return true;
+        }
+
         $name = $permission instanceof PermissionEnum ? $permission->value : $permission;
 
         return in_array($name, $this->permissionNames(), true);

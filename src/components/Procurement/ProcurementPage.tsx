@@ -15,6 +15,7 @@ import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
 import { Modal } from '../ui/Modal';
+import { SearchableSelect } from '../ui/SearchableSelect';
 import { useToast } from '../ui/ToastProvider';
 
 interface SupplierRecord {
@@ -479,18 +480,21 @@ export const ProcurementPage: React.FC<Props> = ({ initialTab = 'po' }) => {
           </div>
 
           <div>
-            <label className="block font-bold text-slate-700 mb-1">Produk</label>
-            <select
+            <label className="block font-bold text-slate-700 mb-1">
+              Produk / Varian (Ketik Nama / SKU atau Klik Daftar)
+            </label>
+            <SearchableSelect
               value={variantId}
-              onChange={(e) => handleSelectVariant(Number(e.target.value))}
-              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white font-semibold"
-            >
-              {allVariants.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.label}
-                </option>
-              ))}
-            </select>
+              onChange={(val) => handleSelectVariant(val)}
+              placeholder="Ketik nama barang / SKU atau pilih dari daftar..."
+              options={allVariants.map((v) => ({
+                value: v.id,
+                label: `${v.product.name} (${v.variant.name})`,
+                sublabel: `SKU: ${v.variant.sku}`,
+                badge: `Satuan: ${v.baseUnit}`,
+                searchKeywords: `${v.product.name} ${v.variant.name} ${v.variant.sku} ${v.variant.barcode ?? ''}`,
+              }))}
+            />
           </div>
 
           {/* Purchase Packaging Unit Selection */}

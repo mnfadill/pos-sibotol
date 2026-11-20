@@ -63,6 +63,7 @@ final class CustomerAndSalesOrderController extends Controller
                 $q->where(static function ($w) use ($like): void {
                     $w->whereRaw('LOWER(name) LIKE ?', [$like])
                         ->orWhereRaw('LOWER(code) LIKE ?', [$like])
+                        ->orWhereRaw('LOWER(COALESCE(phone, \'\')) LIKE ?', [$like])
                         ->orWhereRaw('LOWER(COALESCE(company_name, \'\')) LIKE ?', [$like]);
                 });
             })
@@ -74,27 +75,103 @@ final class CustomerAndSalesOrderController extends Controller
         ]);
     }
 
+    public function showCustomer(Request $request, int $customerId): JsonResponse
+    {
+        $user = $this->context->requireUser();
+
+        $customer = Customer::query()->withoutGlobalScopes()
+            ->with(['outlet:id,code,name', 'priceList:id,code,name,type', 'tier:id,code,name,color', 'addresses'])
+            ->where('organization_id', $user->organization_id)
+            ->findOrFail($customerId);
+
+        $canRevealNik = $user->isSuperAdmin()
+            || $user->hasAnyPermission('customers.manage', 'users.manage', 'receivables.manage')
+            || $user->hasRole(
+                \App\Enums\RoleName::SuperAdmin,
+                \App\Enums\RoleName::Owner,
+                \App\Enums\RoleName::AdminOutlet,
+                \App\Enums\RoleName::OutletManager,
+                \App\Enums\RoleName::Finance,
+            );
+
+        $invoices = Invoice::query()->withoutGlobalScopes()
+            ->with([
+                'outlet:id,code,name',
+                'salesOrder:id,so_number',
+                'order:id,order_number,completed_at,payment_term',
+                'allocations.customerPayment:id,payment_number,method,amount,payment_date,reference_number,notes',
+                'creator:id,name,username',
+            ])
+            ->where('organization_id', $user->organization_id)
+            ->where('customer_id', $customer->id)
+            ->orderByDesc('issue_date')
+            ->orderByDesc('id')
+            ->limit(100)
+            ->get();
+
+        $posOrders = \App\Models\Order::query()->withoutGlobalScopes()
+            ->with([
+                'outlet:id,code,name',
+                'items',
+                'payments',
+                'invoice:id,order_id,invoice_number,status,grand_total,paid_total,balance_due,due_date',
+                'cashier:id,name,username',
+            ])
+            ->where('organization_id', $user->organization_id)
+            ->where('customer_id', $customer->id)
+            ->orderByDesc('created_at')
+            ->limit(100)
+            ->get();
+
+        $customerPayments = CustomerPayment::query()->withoutGlobalScopes()
+            ->with([
+                'outlet:id,code,name',
+                'allocations.invoice:id,invoice_number,grand_total,paid_total,balance_due,status',
+                'receiver:id,name,username',
+            ])
+            ->where('organization_id', $user->organization_id)
+            ->where('customer_id', $customer->id)
+            ->orderByDesc('payment_date')
+            ->orderByDesc('id')
+            ->limit(100)
+            ->get();
+
+        $customerPayload = $customer->toArray();
+        $customerPayload['can_reveal_nik'] = $canRevealNik;
+        if ($canRevealNik && $request->boolean('reveal_nik', false)) {
+            $customerPayload['raw_nik'] = $customer->rawNik();
+        }
+
+        return response()->json([
+            'customer' => $customerPayload,
+            'invoices' => $invoices,
+            'orders' => $posOrders,
+            'payments' => $customerPayments,
+        ]);
+    }
+
     public function storeCustomer(Request $request): JsonResponse
     {
         $user = $this->context->requireUser();
         $outlet = $this->context->outlet();
 
         $validated = $request->validate([
-            'code' => ['required', 'string', 'max:32'],
+            'code' => ['nullable', 'string', 'max:32'],
             'name' => ['required', 'string', 'max:120'],
+            'phone' => ['required', 'string', 'max:32'],
             'company_name' => ['nullable', 'string', 'max:150'],
-            'customer_group' => ['required', 'string', 'in:retailer,wholesaler,reseller,business,walk_in'],
-            'pricing_tier' => ['required', 'string', 'in:retail,reseller,wholesale,vip'],
+            'nik' => ['nullable', 'string', 'max:32'],
+            'customer_group' => ['nullable', 'string', 'in:retailer,wholesaler,reseller,business,walk_in,retail'],
+            'pricing_tier' => ['nullable', 'string', 'max:32'],
             'tier_id' => ['nullable', 'integer', 'exists:tiers,id'],
             'price_list_id' => ['nullable', 'integer', 'exists:price_lists,id'],
-            'phone' => ['nullable', 'string', 'max:32'],
             'email' => ['nullable', 'email', 'max:120'],
             'npwp' => ['nullable', 'string', 'max:64'],
             'sales_pic' => ['nullable', 'string', 'max:120'],
             'city' => ['nullable', 'string', 'max:64'],
             'address' => ['nullable', 'string', 'max:255'],
-            'credit_limit' => ['required', 'numeric', 'min:0'],
-            'payment_term_days' => ['required', 'integer', 'min:0', 'max:180'],
+            'credit_limit' => ['nullable', 'numeric', 'min:0'],
+            'payment_term_days' => ['nullable', 'integer', 'min:0', 'max:180'],
             'customer_status' => ['nullable', 'string', 'in:active,hold,blacklist'],
             'addresses' => ['nullable', 'array'],
             'addresses.*.label' => ['required_with:addresses', 'string', 'max:64'],
@@ -106,24 +183,40 @@ final class CustomerAndSalesOrderController extends Controller
         ]);
 
         return DB::transaction(function () use ($user, $outlet, $validated): JsonResponse {
+            $rawCode = isset($validated['code']) ? strtoupper(trim((string) $validated['code'])) : '';
+            if ($rawCode === '') {
+                $prefix = $outlet ? $outlet->code : 'POS';
+                $rawCode = sprintf('CUST-%s-%s', $prefix, strtoupper(substr(uniqid(), -5)));
+            }
+
+            $customerGroup = $validated['customer_group'] ?? 'retailer';
+            if ($customerGroup === 'retail') {
+                $customerGroup = 'retailer';
+            }
+
+            $pricingTier = $validated['pricing_tier'] ?? 'retail';
+            $creditLimit = isset($validated['credit_limit']) ? (float) $validated['credit_limit'] : 25000000.0;
+            $paymentTermDays = isset($validated['payment_term_days']) ? (int) $validated['payment_term_days'] : 14;
+
             $customer = Customer::query()->withoutGlobalScopes()->create([
                 'organization_id' => $user->organization_id,
                 'outlet_id' => $outlet?->id,
                 'tier_id' => $validated['tier_id'] ?? null,
                 'price_list_id' => $validated['price_list_id'] ?? null,
-                'code' => strtoupper(trim((string) $validated['code'])),
-                'name' => $validated['name'],
-                'company_name' => $validated['company_name'] ?? $validated['name'],
-                'customer_group' => $validated['customer_group'],
-                'pricing_tier' => $validated['pricing_tier'],
-                'phone' => $validated['phone'] ?? null,
+                'code' => $rawCode,
+                'name' => trim((string) $validated['name']),
+                'company_name' => ! empty($validated['company_name']) ? trim((string) $validated['company_name']) : trim((string) $validated['name']),
+                'customer_group' => $customerGroup,
+                'pricing_tier' => $pricingTier,
+                'phone' => trim((string) $validated['phone']),
                 'email' => $validated['email'] ?? null,
                 'npwp' => $validated['npwp'] ?? null,
+                'nik' => ! empty($validated['nik']) ? preg_replace('/\s+/', '', (string) $validated['nik']) : null,
                 'sales_pic' => $validated['sales_pic'] ?? null,
                 'city' => $validated['city'] ?? $outlet?->city,
                 'address' => $validated['address'] ?? null,
-                'credit_limit' => number_format((float) $validated['credit_limit'], 2, '.', ''),
-                'payment_term_days' => (int) $validated['payment_term_days'],
+                'credit_limit' => number_format($creditLimit, 2, '.', ''),
+                'payment_term_days' => $paymentTermDays,
                 'outstanding_balance' => '0.00',
                 'customer_status' => $validated['customer_status'] ?? 'active',
                 'is_active' => ($validated['customer_status'] ?? 'active') !== 'blacklist',
@@ -177,6 +270,7 @@ final class CustomerAndSalesOrderController extends Controller
             'phone' => ['nullable', 'string', 'max:32'],
             'email' => ['nullable', 'email', 'max:120'],
             'npwp' => ['nullable', 'string', 'max:64'],
+            'nik' => ['nullable', 'string', 'max:32'],
             'sales_pic' => ['nullable', 'string', 'max:120'],
             'city' => ['nullable', 'string', 'max:64'],
             'address' => ['nullable', 'string', 'max:255'],

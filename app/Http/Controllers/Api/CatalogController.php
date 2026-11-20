@@ -23,6 +23,7 @@ use App\Support\Money;
 use App\Support\PosContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 final class CatalogController extends Controller
@@ -34,63 +35,223 @@ final class CatalogController extends Controller
         private readonly PricingAndCostService $pricing,
     ) {}
 
+    public static function flushOrganizationCache(int $organizationId): void
+    {
+        \App\Services\PosCatalogCacheService::bumpMetadata($organizationId);
+        \App\Services\PosCatalogCacheService::bumpPricing($organizationId);
+    }
+
     public function categories(): JsonResponse
     {
-        $categories = Category::query()
-            ->with(['children' => static fn ($q) => $q->where('is_active', true)->orderBy('sort_order')])
-            ->roots()
-            ->where('is_active', true)
-            ->orderBy('sort_order')
-            ->get();
+        $user = $this->context->requireUser();
+        $orgId = (int) $user->organization_id;
 
-        return response()->json(['categories' => $categories]);
+        $payload = Cache::remember("pos_org_{$orgId}_catalog_categories_v1", 300, static function () use ($orgId): array {
+            $counts = Product::query()->withoutGlobalScopes()
+                ->where('organization_id', $orgId)
+                ->where('is_active', true)
+                ->whereNull('deleted_at')
+                ->selectRaw('category_id, COUNT(*) as total')
+                ->groupBy('category_id')
+                ->pluck('total', 'category_id');
+
+            $totalActiveProducts = (int) $counts->sum();
+
+            $categories = Category::query()
+                ->select(['id', 'organization_id', 'parent_id', 'name', 'slug', 'color', 'sort_order', 'is_active'])
+                ->with(['children' => static fn ($q) => $q
+                    ->select(['id', 'organization_id', 'parent_id', 'name', 'slug', 'color', 'sort_order', 'is_active'])
+                    ->where('is_active', true)
+                    ->orderBy('sort_order')])
+                ->roots()
+                ->where('is_active', true)
+                ->orderBy('sort_order')
+                ->get()
+                ->map(static function (Category $cat) use ($counts): array {
+                    $ownCount = (int) ($counts->get($cat->id) ?? 0);
+                    $childrenCount = 0;
+                    foreach ($cat->children as $child) {
+                        $childrenCount += (int) ($counts->get($child->id) ?? 0);
+                    }
+                    $arr = $cat->toArray();
+                    $arr['products_count'] = $ownCount + $childrenCount;
+
+                    return $arr;
+                })
+                ->values()
+                ->all();
+
+            return [
+                'categories' => $categories,
+                'total_products' => $totalActiveProducts,
+            ];
+        });
+
+        return response()->json($payload);
     }
 
     public function products(Request $request): JsonResponse
     {
         $outlet = $this->context->requireOutlet();
+        $warehouse = $this->context->warehouse();
+        $orgId = (int) $outlet->organization_id;
+        $outletId = (int) $outlet->id;
+        $warehouseId = $warehouse?->id ? (int) $warehouse->id : null;
         $categoryId = $request->integer('category_id');
-        $search = $request->string('search')->toString();
+        $search = trim($request->string('search')->toString());
         $includeUnavailable = $request->boolean('include_unavailable', true);
+        $isPaginated = $request->has('page') || $request->has('per_page');
+        $page = max(1, $request->integer('page', 1));
+        $perPage = min(50, max(10, $request->integer('per_page', 30)));
+        $compact = $request->boolean('compact', false);
+        $customerTier = strtoupper(trim((string) $request->query('customer_tier', 'A')));
 
-        $products = Product::query()
+        // Context-isolated cache versions (Organization Metadata + Outlet/Org Pricing + Outlet/Warehouse Stock)
+        $metaVer = \App\Services\PosCatalogCacheService::metadataVersion($orgId);
+        $priceVer = \App\Services\PosCatalogCacheService::pricingVersion($orgId, $outletId);
+        $stockVer = \App\Services\PosCatalogCacheService::stockVersion($outletId, $warehouseId);
+
+        // Full response cache for standard catalog browsing (no free-text search) with short stock-safe TTL (15s)
+        // Automatically bypassed/invalidated instantly whenever metadata, price, or outlet stock version bumps!
+        $canUseResponseCache = $compact && $isPaginated && $search === '';
+        if ($canUseResponseCache) {
+            $responseCacheKey = sprintf(
+                'pos:catalog:o%d:w%d:c%d:t%s:p%d:pp%d:iu%d:mv%d:pv%d:sv%d',
+                $outletId,
+                $warehouseId ?? 0,
+                $categoryId,
+                $customerTier,
+                $page,
+                $perPage,
+                $includeUnavailable ? 1 : 0,
+                $metaVer,
+                $priceVer,
+                $stockVer,
+            );
+
+            $cachedPayload = Cache::get($responseCacheKey);
+            if (is_array($cachedPayload)) {
+                return response()->json($cachedPayload)->header('X-POS-Cache', 'HIT');
+            }
+        }
+
+        $query = Product::query()
+            ->select([
+                'id', 'organization_id', 'category_id', 'brand_id', 'principal_id',
+                'name', 'sku', 'short_description', 'description', 'product_type',
+                'base_price', 'unit', 'net_content', 'net_content_unit', 'abv',
+                'packaging_type', 'country_of_origin', 'is_returnable_packaging',
+                'default_barcode', 'track_stock', 'track_batch', 'track_expiry',
+                'image_url', 'is_active',
+            ])
             ->with([
                 'category:id,name,slug,color,parent_id',
                 'brand:id,code,name',
-                'principal:id,code,name',
-                'variants' => static fn ($q) => $q->where('is_active', true)->orderBy('sort_order'),
-                'productUnits' => static fn ($q) => $q->where('is_active', true)->orderBy('conversion_factor'),
-                'barcodes' => static fn ($q) => $q->where('is_active', true),
-                'modifiers' => static fn ($q) => $q->where('is_active', true)->orderBy('group_name')->orderBy('sort_order'),
+                'variants' => static fn ($q) => $q
+                    ->select([
+                        'id', 'product_id', 'name', 'sku', 'barcode',
+                        'cost_price', 'average_cost', 'last_purchase_cost',
+                        'price', 'member_price', 'reseller_price', 'wholesale_price',
+                        'min_selling_price', 'is_default', 'is_active', 'sort_order',
+                    ])
+                    ->where('is_active', true)
+                    ->orderBy('sort_order')
+                    ->orderBy('id'),
+                'productUnits' => static fn ($q) => $q
+                    ->select([
+                        'id', 'organization_id', 'product_id', 'product_variant_id', 'unit_id',
+                        'unit_code', 'unit_name', 'conversion_factor', 'is_base',
+                        'is_purchase_unit', 'is_sales_unit', 'barcode',
+                        'selling_price', 'member_price', 'reseller_price', 'wholesale_price',
+                        'tier_a_price', 'tier_b_price', 'tier_c_price', 'tier_d_price',
+                        'purchase_cost', 'min_purchase_qty', 'is_locked', 'is_active',
+                    ])
+                    ->where('is_active', true)
+                    ->orderBy('conversion_factor'),
+                'modifiers' => static fn ($q) => $q
+                    ->select(['id', 'product_id', 'group_name', 'name', 'price', 'is_required', 'is_multiple', 'sort_order', 'is_active'])
+                    ->where('is_active', true)
+                    ->orderBy('group_name')
+                    ->orderBy('sort_order'),
             ])
             ->active()
-            ->when($categoryId > 0, static function ($q) use ($categoryId): void {
-                $childIds = Category::query()->where('parent_id', $categoryId)->pluck('id')->all();
+            ->when($categoryId > 0, static function ($q) use ($categoryId, $orgId, $metaVer): void {
+                $childIds = Cache::remember(
+                    "pos_org_{$orgId}_mv{$metaVer}_cat_children_{$categoryId}",
+                    \App\Services\PosCatalogCacheService::METADATA_TTL_SECONDS,
+                    static fn () => Category::query()->where('parent_id', $categoryId)->pluck('id')->all(),
+                );
                 $q->whereIn('category_id', array_merge([$categoryId], $childIds));
             })
             ->search($search)
             ->orderBy('name')
-            ->get();
+            ->orderBy('id');
 
-        $variantIds = $products->flatMap(static fn (Product $p) => $p->variants->pluck('id'))->all();
+        if (! $compact) {
+            $query->with([
+                'principal:id,code,name',
+                'barcodes' => static fn ($q) => $q->where('is_active', true),
+            ]);
+        }
 
-        $outletSettings = ProductOutletSetting::query()->withoutGlobalScopes()
-            ->where('outlet_id', $outlet->id)
-            ->whereIn('product_variant_id', $variantIds)
-            ->get()
-            ->keyBy('product_variant_id');
+        $paginationMeta = null;
+        if ($isPaginated) {
+            $paginator = $query->paginate($perPage);
+            $products = collect($paginator->items());
+            $paginationMeta = [
+                'current_page' => $paginator->currentPage(),
+                'per_page' => $paginator->perPage(),
+                'total' => $paginator->total(),
+                'last_page' => $paginator->lastPage(),
+                'has_more' => $paginator->hasMorePages(),
+            ];
+        } else {
+            $products = $query->get();
+        }
 
-        $inventories = OutletInventory::query()->withoutGlobalScopes()
-            ->where('outlet_id', $outlet->id)
-            ->whereIn('product_variant_id', $variantIds)
-            ->get()
-            ->keyBy('product_variant_id');
+        $allVariants = $products->flatMap(static fn (Product $p) => $p->variants);
+        $variantIds = $allVariants->pluck('id')->all();
+        $variantHash = $variantIds !== [] ? md5(implode(',', $variantIds)) : 'empty';
 
-        $customerTier = strtoupper(trim((string) $request->query('customer_tier', 'A')));
-        $pricing = $this->pricing;
+        // Outlet settings (availability + outlet price override) cached by pricingVersion
+        $outletSettings = $variantIds !== []
+            ? Cache::remember(
+                "pos:os:o{$outletId}:pv{$priceVer}:{$variantHash}",
+                \App\Services\PosCatalogCacheService::PRICING_TTL_SECONDS,
+                static fn () => ProductOutletSetting::query()->withoutGlobalScopes()
+                    ->select(['product_variant_id', 'is_available', 'price_override'])
+                    ->where('outlet_id', $outletId)
+                    ->whereIn('product_variant_id', $variantIds)
+                    ->get()
+                    ->keyBy('product_variant_id'),
+            )
+            : collect();
 
-        $transformed = $products->map(static function (Product $product) use ($outletSettings, $inventories, $includeUnavailable, $outlet, $pricing, $customerTier): ?array {
-            $variants = $product->variants->map(static function (ProductVariant $v) use ($product, $outletSettings, $inventories, $outlet, $pricing, $customerTier): array {
+        // Stock snapshot cached with short TTL (15s) & isolated by outlet + warehouse + stockVersion
+        $inventories = $variantIds !== []
+            ? Cache::remember(
+                "pos:stk:o{$outletId}:w".($warehouseId ?? 0).":sv{$stockVer}:{$variantHash}",
+                \App\Services\PosCatalogCacheService::STOCK_TTL_SECONDS,
+                static fn () => OutletInventory::query()->withoutGlobalScopes()
+                    ->select(['product_variant_id', 'quantity', 'reorder_level'])
+                    ->where('outlet_id', $outletId)
+                    ->whereIn('product_variant_id', $variantIds)
+                    ->get()
+                    ->keyBy('product_variant_id'),
+            )
+            : collect();
+
+        // Tier prices cached by organization + outlet + pricingVersion (instant invalidation on price/tier change)
+        $tierPricesByVariantId = $variantIds !== []
+            ? Cache::remember(
+                "pos:tp:o{$outletId}:pv{$priceVer}:{$variantHash}",
+                \App\Services\PosCatalogCacheService::PRICING_TTL_SECONDS,
+                fn (): array => $this->pricing->resolveAllTierPricesBatch($allVariants, $outlet, $outletSettings),
+            )
+            : [];
+
+        $transformed = $products->map(static function (Product $product) use ($outletSettings, $inventories, $includeUnavailable, $tierPricesByVariantId, $customerTier, $compact): ?array {
+            $variants = $product->variants->map(static function (ProductVariant $v) use ($product, $outletSettings, $inventories, $tierPricesByVariantId, $customerTier, $compact): array {
                 /** @var ProductOutletSetting|null $setting */
                 $setting = $outletSettings->get($v->id);
                 /** @var OutletInventory|null $inv */
@@ -99,27 +260,16 @@ final class CatalogController extends Controller
                 $isAvailable = $setting ? $setting->is_available : true;
                 $priceOverride = $setting?->price_override;
 
-                $tierPrices = $pricing->resolveAllTierPrices($v, $outlet);
+                $tierPrices = $tierPricesByVariantId[$v->id] ?? ['A' => (string) $v->price];
                 $effectivePrice = $tierPrices[$customerTier] ?? ($priceOverride ?? $v->price);
 
-                $variantUnits = $product->productUnits
-                    ->filter(static fn (ProductUnit $pu): bool => $pu->product_variant_id === null || (int) $pu->product_variant_id === (int) $v->id)
-                    ->values()
-                    ->all();
-
-                return [
+                $row = [
                     'id' => $v->id,
                     'product_id' => $v->product_id,
                     'name' => $v->name,
                     'sku' => $v->sku,
                     'barcode' => $v->barcode,
-                    'cost_price' => $v->cost_price,
-                    'average_cost' => $v->average_cost ?? $v->cost_price,
-                    'last_purchase_cost' => $v->last_purchase_cost ?? $v->cost_price,
                     'base_price' => $v->price,
-                    'wholesale_price' => $v->wholesale_price,
-                    'reseller_price' => $v->reseller_price,
-                    'min_selling_price' => $v->min_selling_price ?? '0.00',
                     'price_override' => $priceOverride,
                     'effective_price' => $effectivePrice,
                     'tier_prices' => $tierPrices,
@@ -128,52 +278,89 @@ final class CatalogController extends Controller
                     'is_default' => $v->is_default,
                     'stock_quantity' => $inv ? $inv->quantity : '0.000',
                     'reorder_level' => $inv ? $inv->reorder_level : '0.000',
-                    'units' => $variantUnits,
                 ];
+
+                if (! $compact) {
+                    $variantUnits = $product->productUnits
+                        ->filter(static fn (ProductUnit $pu): bool => $pu->product_variant_id === null || (int) $pu->product_variant_id === (int) $v->id)
+                        ->values()
+                        ->all();
+                    $row['cost_price'] = $v->cost_price;
+                    $row['average_cost'] = $v->average_cost ?? $v->cost_price;
+                    $row['last_purchase_cost'] = $v->last_purchase_cost ?? $v->cost_price;
+                    $row['wholesale_price'] = $v->wholesale_price;
+                    $row['reseller_price'] = $v->reseller_price;
+                    $row['min_selling_price'] = $v->min_selling_price ?? '0.00';
+                    $row['units'] = $variantUnits;
+                }
+
+                return $row;
             })->filter(static fn (array $v): bool => $includeUnavailable || $v['is_available'])->values();
 
             if ($variants->isEmpty()) {
                 return null;
             }
 
-            return [
+            $item = [
                 'id' => $product->id,
                 'category_id' => $product->category_id,
                 'category' => $product->category,
                 'brand_id' => $product->brand_id,
                 'brand' => $product->brand,
-                'principal_id' => $product->principal_id,
-                'principal' => $product->principal,
                 'name' => $product->name,
                 'sku' => $product->sku,
-                'short_description' => $product->short_description,
-                'description' => $product->description,
-                'product_type' => $product->product_type ?? 'regular',
-                'status' => $product->status ?? 'active',
                 'base_price' => $product->base_price,
                 'unit' => $product->unit,
-                'net_content' => $product->net_content,
-                'net_content_unit' => $product->net_content_unit ?? 'ml',
-                'abv' => $product->abv,
-                'packaging_type' => $product->packaging_type,
-                'country_of_origin' => $product->country_of_origin,
-                'is_returnable_packaging' => (bool) ($product->is_returnable_packaging ?? false),
-                'default_barcode' => $product->default_barcode,
                 'track_stock' => $product->track_stock,
-                'track_batch' => (bool) ($product->track_batch ?? false),
-                'track_expiry' => (bool) ($product->track_expiry ?? false),
                 'image_url' => $product->image_url,
                 'variants' => $variants->all(),
                 'product_units' => $product->productUnits->values()->all(),
-                'barcodes' => $product->barcodes->values()->all(),
                 'modifiers' => $product->modifiers->values()->all(),
             ];
+
+            if (! $compact) {
+                $item['principal_id'] = $product->principal_id;
+                $item['principal'] = $product->principal;
+                $item['short_description'] = $product->short_description;
+                $item['description'] = $product->description;
+                $item['product_type'] = $product->product_type ?? 'regular';
+                $item['status'] = $product->status ?? 'active';
+                $item['net_content'] = $product->net_content;
+                $item['net_content_unit'] = $product->net_content_unit ?? 'ml';
+                $item['abv'] = $product->abv;
+                $item['packaging_type'] = $product->packaging_type;
+                $item['country_of_origin'] = $product->country_of_origin;
+                $item['is_returnable_packaging'] = (bool) ($product->is_returnable_packaging ?? false);
+                $item['default_barcode'] = $product->default_barcode;
+                $item['track_batch'] = (bool) ($product->track_batch ?? false);
+                $item['track_expiry'] = (bool) ($product->track_expiry ?? false);
+                $item['barcodes'] = $product->barcodes->values()->all();
+            }
+
+            return $item;
         })->filter()->values();
 
-        return response()->json([
-            'outlet_id' => $outlet->id,
+        $response = [
+            'outlet_id' => $outletId,
+            'warehouse_id' => $warehouseId,
+            'cache_versions' => [
+                'metadata' => $metaVer,
+                'pricing' => $priceVer,
+                'stock' => $stockVer,
+            ],
+            'synced_at' => now()->toIso8601String(),
             'products' => $transformed,
-        ]);
+        ];
+
+        if ($paginationMeta !== null) {
+            $response['pagination'] = $paginationMeta;
+        }
+
+        if ($canUseResponseCache) {
+            Cache::put($responseCacheKey, $response, \App\Services\PosCatalogCacheService::STOCK_TTL_SECONDS);
+        }
+
+        return response()->json($response)->header('X-POS-Cache', 'MISS');
     }
 
     /**
@@ -255,17 +442,26 @@ final class CatalogController extends Controller
             uomQty: 1,
         );
 
+        $tierPricesMap = $this->pricing->resolveAllTierPricesBatch(
+            collect([$variant]),
+            $outlet,
+            $setting ? collect([$variant->id => $setting]) : collect(),
+        );
+        $tierPrices = $tierPricesMap[$variant->id] ?? ['A' => (string) $variant->price];
+
         return response()->json([
             'variant' => [
                 'id' => $variant->id,
                 'product_id' => $variant->product_id,
                 'product_name' => $variant->product->name,
+                'product_unit_base' => $variant->product->unit ?? 'PCS',
                 'name' => $variant->name,
                 'sku' => $variant->sku,
                 'barcode' => $code,
                 'base_price' => $variant->price,
                 'price_override' => $setting?->price_override,
                 'effective_price' => $resolvedPrice['unit_price'],
+                'tier_prices' => $tierPrices,
                 'uom_code' => $matchedUnit ? $matchedUnit->unit_code : ($variant->product->unit ?? 'PCS'),
                 'product_unit_id' => $matchedUnit?->id,
                 'conversion_factor' => $matchedUnit ? $matchedUnit->conversion_factor : '1.000',

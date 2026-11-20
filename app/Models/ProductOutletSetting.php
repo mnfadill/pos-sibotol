@@ -25,6 +25,19 @@ class ProductOutletSetting extends Model
 
     protected $fillable = ['outlet_id', 'product_id', 'product_variant_id', 'is_available', 'price_override', 'updated_by'];
 
+    protected static function booted(): void
+    {
+        $flush = static function (self $model): void {
+            if ($model->outlet_id) {
+                $orgId = (int) ($model->product?->organization_id ?? 1);
+                \App\Services\PosCatalogCacheService::bumpPricing($orgId, (int) $model->outlet_id);
+                \App\Services\PosCatalogCacheService::bumpStock((int) $model->outlet_id);
+            }
+        };
+        static::saved($flush);
+        static::deleted($flush);
+    }
+
     protected function casts(): array
     {
         return [

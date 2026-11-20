@@ -11,11 +11,13 @@ use App\Enums\PaymentStatus;
 use App\Enums\Permission;
 use App\Exceptions\BusinessRuleException;
 use App\Models\Customer;
+use App\Models\CustomerPayment;
 use App\Models\Invoice;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Outlet;
 use App\Models\Payment;
+use App\Models\PaymentAllocation;
 use App\Models\ProductModifier;
 use App\Models\ProductOutletSetting;
 use App\Models\ProductVariant;
@@ -534,8 +536,22 @@ final class OrderCheckoutService
                 : null;
             $defaultCustomerName = $tierRef ? 'Customer ' . strtoupper(trim((string) $payload['customer_tier'])) : null;
             $hasDebt = $resolvedPayments['debt_minor'] > 0;
+            $paymentScheme = isset($payload['payment_scheme']) ? (string) $payload['payment_scheme'] : ($hasDebt ? ($resolvedPayments['applied_total_minor'] > 0 ? 'partial' : 'tempo') : 'full');
+            if (in_array($paymentScheme, ['partial', 'tempo'], true) && ! $hasDebt && $resolvedPayments['applied_total_minor'] === 0) {
+                $hasDebt = true;
+            }
+
+            if (($hasDebt || in_array($paymentScheme, ['partial', 'tempo'], true)) && empty($customerId) && empty(trim((string) ($payload['customer_name'] ?? '')))) {
+                throw new BusinessRuleException(
+                    'CUSTOMER_REQUIRED_FOR_DEBT',
+                    'Untuk transaksi Partial Payment (DP) atau Credit / Tempo, pelanggan wajib dipilih terlebih dahulu.',
+                    422,
+                );
+            }
+
             $paymentTerm = $hasDebt ? 'tempo' : 'cash';
-            $dueDate = $hasDebt ? $now->addDays(14)->toDateString() : null;
+            $requestedDueDate = ! empty($payload['due_date']) ? CarbonImmutable::parse((string) $payload['due_date'])->toDateString() : null;
+            $dueDate = $hasDebt ? ($requestedDueDate ?? $now->addDays(14)->toDateString()) : null;
 
             if ($existingOrderId !== null && $existingOrderId > 0) {
                 $order = Order::query()
@@ -667,34 +683,35 @@ final class OrderCheckoutService
                 ];
             }
 
-            // If customer paid less than grand total, record remaining balance as Accounts Receivable (Piutang / Hutang)
-            if ($hasDebt) {
-                $debtCustomer = null;
-                if ($order->customer_id) {
-                    $debtCustomer = Customer::query()->withoutGlobalScopes()
-                        ->where('organization_id', $outlet->organization_id)
-                        ->lockForUpdate()
-                        ->find($order->customer_id);
-                }
+            // Link customer & create Invoice record when customer is linked or when transaction has debt (DP / Tempo)
+            $linkedCustomer = null;
+            if ($order->customer_id) {
+                $linkedCustomer = Customer::query()->withoutGlobalScopes()
+                    ->where('organization_id', $outlet->organization_id)
+                    ->lockForUpdate()
+                    ->find($order->customer_id);
+            }
 
+            if ($hasDebt || $linkedCustomer !== null) {
                 $resolvedCustomerName = trim((string) ($order->customer_name ?: 'Walk-in Pelanggan POS'));
-                if ($debtCustomer === null) {
-                    $debtCustomer = Customer::query()->withoutGlobalScopes()
+                if ($linkedCustomer === null) {
+                    $linkedCustomer = Customer::query()->withoutGlobalScopes()
                         ->where('organization_id', $outlet->organization_id)
                         ->whereRaw('LOWER(name) = ?', [mb_strtolower($resolvedCustomerName)])
                         ->lockForUpdate()
                         ->first();
                 }
 
-                if ($debtCustomer === null) {
+                if ($linkedCustomer === null) {
                     $custCode = sprintf('CUST-POS-%s-%04d', $outlet->code, random_int(1, 9999));
-                    $debtCustomer = Customer::query()->withoutGlobalScopes()->create([
+                    $linkedCustomer = Customer::query()->withoutGlobalScopes()->create([
                         'organization_id' => $outlet->organization_id,
                         'outlet_id' => $outlet->id,
                         'code' => $custCode,
                         'name' => $resolvedCustomerName,
+                        'company_name' => $resolvedCustomerName,
                         'phone' => $order->customer_phone,
-                        'customer_group' => 'retail',
+                        'customer_group' => 'retailer',
                         'pricing_tier' => isset($payload['customer_tier']) ? (string) $payload['customer_tier'] : 'TIER_1',
                         'payment_term_days' => 14,
                         'credit_limit' => 50000000,
@@ -704,17 +721,29 @@ final class OrderCheckoutService
                 }
 
                 if (! $order->customer_id) {
-                    $order->update(['customer_id' => $debtCustomer->id]);
+                    $order->update([
+                        'customer_id' => $linkedCustomer->id,
+                        'customer_name' => $linkedCustomer->name,
+                        'customer_phone' => $linkedCustomer->phone ?: $order->customer_phone,
+                    ]);
                 }
 
-                $termDays = max(1, (int) ($debtCustomer->payment_term_days ?: 14));
-                $invoiceDueDate = $now->addDays($termDays)->toDateString();
-                $invoiceStatus = $resolvedPayments['applied_total_minor'] > 0 ? 'partial' : 'unpaid';
+                $termDays = max(1, (int) ($linkedCustomer->payment_term_days ?: 14));
+                $invoiceDueDate = $requestedDueDate ?? ($hasDebt ? $now->addDays($termDays)->toDateString() : $now->toDateString());
+                if ($hasDebt && $order->due_date !== $invoiceDueDate) {
+                    $order->update(['due_date' => $invoiceDueDate]);
+                }
 
-                Invoice::query()->withoutGlobalScopes()->create([
+                $invoiceStatus = ! $hasDebt
+                    ? 'paid'
+                    : ($resolvedPayments['applied_total_minor'] > 0 ? 'partial' : 'unpaid');
+
+                $activeShiftCheckin = $this->context->employeeShiftCheckin();
+
+                $createdInvoice = Invoice::query()->withoutGlobalScopes()->create([
                     'organization_id' => $outlet->organization_id,
                     'outlet_id' => $outlet->id,
-                    'customer_id' => $debtCustomer->id,
+                    'customer_id' => $linkedCustomer->id,
                     'order_id' => $order->id,
                     'invoice_number' => 'AR-' . $order->order_number,
                     'status' => $invoiceStatus,
@@ -727,25 +756,75 @@ final class OrderCheckoutService
                     'paid_total' => $resolvedPayments['applied_total'],
                     'balance_due' => $resolvedPayments['debt_total'],
                     'notes' => sprintf(
-                        'Piutang Transaksi POS %s (%s). Total: Rp %s, Dibayar: Rp %s, Sisa Hutang: Rp %s',
+                        'Transaksi POS %s (%s). Total: Rp %s, Dibayar: Rp %s, Sisa Piutang: Rp %s',
                         $order->order_number,
-                        $resolvedCustomerName,
+                        $linkedCustomer->name,
                         number_format((float) $order->grand_total, 0, ',', '.'),
                         number_format((float) $resolvedPayments['applied_total'], 0, ',', '.'),
                         number_format((float) $resolvedPayments['debt_total'], 0, ',', '.'),
                     ),
                     'created_by' => $user->id,
                     'updated_by' => $user->id,
+                    'shift_id' => $activeShiftCheckin?->shift_id,
+                    'employee_shift_checkin_id' => $activeShiftCheckin?->id,
+                    'work_date' => $activeShiftCheckin?->work_date ?? $now->toDateString(),
                 ]);
 
-                $newOutstanding = round((float) $debtCustomer->outstanding_balance + (float) $resolvedPayments['debt_total'], 2);
-                $debtCustomer->update([
-                    'outstanding_balance' => number_format($newOutstanding, 2, '.', ''),
-                ]);
+                // Record each initial payment / DP as a separate CustomerPayment & PaymentAllocation record so installment history is never overwritten
+                foreach ($resolvedPayments['legs'] as $legIdx => $leg) {
+                    if ($leg['amount_minor'] <= 0) {
+                        continue;
+                    }
+                    $arMethod = match ($leg['method']) {
+                        PaymentMethod::Cash => 'cash',
+                        PaymentMethod::Qris => 'qris',
+                        default => 'bank_transfer',
+                    };
+                    $payNum = sprintf(
+                        'PAY-%s-%s-%s-%d',
+                        $outlet->code,
+                        $now->format('Ymd'),
+                        substr(preg_replace('/\D/', '', $order->order_number) ?: (string) $order->id, -4),
+                        $legIdx + 1,
+                    );
+                    $custPayment = CustomerPayment::query()->withoutGlobalScopes()->create([
+                        'organization_id' => $outlet->organization_id,
+                        'outlet_id' => $outlet->id,
+                        'customer_id' => $linkedCustomer->id,
+                        'payment_number' => $payNum,
+                        'method' => $arMethod,
+                        'amount' => $leg['amount'],
+                        'allocated_amount' => $leg['amount'],
+                        'unallocated_amount' => '0.00',
+                        'reference_number' => $leg['reference_number'] ?: $order->order_number,
+                        'payment_date' => $now->toDateString(),
+                        'notes' => $hasDebt
+                            ? sprintf('Pembayaran Awal (DP) POS %s', $order->order_number)
+                            : sprintf('Pembayaran Lunas POS %s', $order->order_number),
+                        'received_by' => $user->id,
+                        'shift_id' => $activeShiftCheckin?->shift_id,
+                        'employee_shift_checkin_id' => $activeShiftCheckin?->id,
+                        'work_date' => $activeShiftCheckin?->work_date ?? $now->toDateString(),
+                    ]);
+
+                    PaymentAllocation::query()->create([
+                        'customer_payment_id' => $custPayment->id,
+                        'invoice_id' => $createdInvoice->id,
+                        'amount' => $leg['amount'],
+                    ]);
+                }
+
+                if ($hasDebt) {
+                    $newOutstanding = round((float) $linkedCustomer->outstanding_balance + (float) $resolvedPayments['debt_total'], 2);
+                    $linkedCustomer->update([
+                        'outstanding_balance' => number_format($newOutstanding, 2, '.', ''),
+                    ]);
+                }
             }
 
-            // Atomic stock deduction
+            // Atomic stock deduction (always reads & locks live DB rows; never uses cache)
             $this->inventory->deductForOrder($order, $outlet);
+            \App\Services\PosCatalogCacheService::bumpStock((int) $outlet->id, $this->context->warehouse()?->id);
 
             // Audit supervisor overrides if any occurred
             foreach ($calc['_price_override_logs'] as $overrideLog) {
@@ -828,7 +907,7 @@ final class OrderCheckoutService
                 'payments' => $paymentSummaries,
             ]);
 
-            return $order->load(['items', 'payments', 'cashier', 'terminal']);
+            return $order->load(['items', 'payments', 'cashier', 'terminal', 'customer', 'invoice.allocations.customerPayment']);
         });
     }
 

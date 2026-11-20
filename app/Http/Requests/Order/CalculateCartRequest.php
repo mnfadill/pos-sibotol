@@ -11,7 +11,27 @@ class CalculateCartRequest extends FormRequest
 {
     public function authorize(): bool
     {
-        return $this->user()?->hasPermission('pos.checkout') ?? false;
+        $user = $this->user();
+        if ($user === null || ! $user->is_active) {
+            return false;
+        }
+
+        return $user->hasAnyPermission(
+            'pos.checkout',
+            'orders.create',
+            'orders.hold',
+            'orders.manage',
+            'orders.edit',
+            'sales_orders.create',
+        ) || $user->hasRole(
+            \App\Enums\RoleName::Cashier,
+            \App\Enums\RoleName::Supervisor,
+            \App\Enums\RoleName::OutletManager,
+            \App\Enums\RoleName::AdminOutlet,
+            \App\Enums\RoleName::SalesRep,
+            \App\Enums\RoleName::Owner,
+            \App\Enums\RoleName::SuperAdmin,
+        );
     }
 
     /** @return array<string, mixed> */

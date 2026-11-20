@@ -211,6 +211,7 @@ export interface Category {
   description?: string | null;
   color: string | null;
   is_active?: boolean;
+  products_count?: number;
   children?: Category[];
 }
 
@@ -254,6 +255,12 @@ export interface ProductCatalog {
     slug: string;
     color: string | null;
   } | null;
+  brand_id?: number | null;
+  brand?: {
+    id: number;
+    code: string;
+    name: string;
+  } | null;
   name: string;
   sku: string;
   description: string | null;
@@ -286,6 +293,7 @@ export interface CartItem {
   modifiers: ProductModifier[];
   notes?: string;
   uom_code?: string;
+  unit_name?: string;
   conversion_factor?: string;
   customer_tier?: string | null;
   product_unit_id?: number | null;
@@ -340,13 +348,18 @@ export interface PaymentRecord {
   paid_at?: string | null;
 }
 
+export type PaymentSchemeType = 'full' | 'partial' | 'tempo';
+
 export interface OrderRecord {
   id: number;
   uuid: string;
   outlet_id: number;
   pos_terminal_id: number;
+  customer_id?: number | null;
   order_number: string;
   status: 'held' | 'completed' | 'cancelled' | 'voided' | 'partially_refunded' | 'refunded';
+  payment_term?: 'cash' | 'tempo' | string | null;
+  due_date?: string | null;
   customer_name?: string | null;
   customer_phone?: string | null;
   crm_customer_ref?: string | null;
@@ -370,6 +383,37 @@ export interface OrderRecord {
   created_at: string;
   items: OrderItemRecord[];
   payments?: PaymentRecord[];
+  customer?: {
+    id: number;
+    code: string;
+    name: string;
+    phone?: string | null;
+    company_name?: string | null;
+    address?: string | null;
+    masked_nik?: string | null;
+  } | null;
+  invoice?: {
+    id: number;
+    invoice_number: string;
+    status: 'unpaid' | 'partial' | 'paid' | 'overdue' | 'void';
+    issue_date: string;
+    due_date: string;
+    grand_total: string;
+    paid_total: string;
+    balance_due: string;
+    allocations?: Array<{
+      id: number;
+      amount: string;
+      customer_payment?: {
+        id: number;
+        payment_number: string;
+        method: string;
+        amount: string;
+        payment_date: string;
+        reference_number?: string | null;
+      } | null;
+    }>;
+  } | null;
   cashier?: {
     id: number;
     name: string;

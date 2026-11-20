@@ -78,19 +78,15 @@ class RbacSeeder extends Seeder
     }
 
     /**
-     * Only grant permissions that were created in this run (never re-grant ones an admin removed).
+     * Grant default permissions that are not yet attached to the role.
      *
      * @param  list<int>  $defaultIds
      * @return list<int>
      */
     private static function newPermissionIds(Role $role, array $defaultIds): array
     {
-        $recentlyCreated = Permission::query()
-            ->whereIn('id', $defaultIds)
-            ->where('created_at', '>=', now()->subMinutes(5))
-            ->pluck('id')
-            ->all();
+        $existingIds = $role->permissions()->pluck('permissions.id')->map(static fn ($id): int => (int) $id)->all();
 
-        return array_values(array_map('intval', $recentlyCreated));
+        return array_values(array_diff($defaultIds, $existingIds));
     }
 }

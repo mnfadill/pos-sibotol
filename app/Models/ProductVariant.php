@@ -46,6 +46,18 @@ class ProductVariant extends Model
         'is_default', 'is_active', 'sort_order',
     ];
 
+    protected static function booted(): void
+    {
+        $flush = static function (self $model): void {
+            if ($model->organization_id) {
+                \App\Services\PosCatalogCacheService::bumpMetadata((int) $model->organization_id);
+                \App\Services\PosCatalogCacheService::bumpPricing((int) $model->organization_id);
+            }
+        };
+        static::saved($flush);
+        static::deleted($flush);
+    }
+
     protected function casts(): array
     {
         return [

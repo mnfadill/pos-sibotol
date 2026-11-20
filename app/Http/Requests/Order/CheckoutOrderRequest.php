@@ -13,6 +13,8 @@ final class CheckoutOrderRequest extends CalculateCartRequest
     public function rules(): array
     {
         return array_merge(parent::rules(), [
+            'payment_scheme' => ['nullable', 'string', Rule::in(['full', 'partial', 'tempo'])],
+            'due_date' => ['nullable', 'date'],
             'payments' => ['required', 'array', 'min:1'],
             'payments.*.method' => ['required', 'string', Rule::enum(PaymentMethod::class)],
             'payments.*.amount' => ['required', 'numeric', 'min:0', 'max:999999999999'],

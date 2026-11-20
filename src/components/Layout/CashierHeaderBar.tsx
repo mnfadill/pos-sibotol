@@ -197,8 +197,8 @@ export const CashierHeaderBar: React.FC<CashierHeaderBarProps> = ({
 
   return (
     <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
-      <div className="px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
-        {/* Left: Sidebar Toggle, Explicit "SiBotol | Outlet Name" Badge & Page Title */}
+      <div className="px-4 py-2 flex items-center justify-between gap-3">
+        {/* Left: Sidebar Toggle & Simplified Page Title */}
         <div className="flex items-center gap-3 min-w-0">
           {onToggleSidebar && (
             <button
@@ -211,29 +211,25 @@ export const CashierHeaderBar: React.FC<CashierHeaderBarProps> = ({
             </button>
           )}
 
-          {/* Active Outlet Identity Pill: SiBotol | Outlet Tangerang */}
-          <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 text-white text-xs font-extrabold tracking-tight shadow-xs">
-            <Store className="w-3.5 h-3.5 text-blue-400" />
-            <span>SiBotol</span>
-            <span className="text-slate-500">|</span>
-            <span className="text-blue-300">{active_outlet?.name ?? 'Semua Outlet'}</span>
-            {active_warehouse && (
-              <span className="ml-1 px-1.5 py-0.5 rounded bg-slate-800 text-[10px] font-mono text-emerald-300 border border-slate-700">
-                {active_warehouse.code}
-              </span>
-            )}
-          </div>
-
           <div className="min-w-0">
-            <h1 className="text-sm font-extrabold text-slate-900 truncate">{pageMeta.title}</h1>
-            <p className="text-[11px] text-slate-500 hidden lg:block truncate">
-              {pageMeta.subtitle}
-            </p>
+            <div className="flex items-center gap-2">
+              <h1 className="text-sm font-extrabold text-slate-900 truncate">{pageMeta.title}</h1>
+              {active_warehouse && (
+                <span className="hidden sm:inline-flex items-center px-2 py-0.5 rounded-md bg-slate-100 text-[10px] font-mono font-bold text-slate-600 border border-slate-200">
+                  {active_warehouse.code}
+                </span>
+              )}
+            </div>
+            {activeTab !== 'checkout' && (
+              <p className="text-[11px] text-slate-500 hidden xl:block truncate">
+                {pageMeta.subtitle}
+              </p>
+            )}
           </div>
         </div>
 
         {/* Right: Switch Outlet Dropdown, Shift Drawer, Notifications, User Profile */}
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2 shrink-0">
           {/* Switch Outlet Dropdown */}
           <div className="relative">
             <button
@@ -245,9 +241,9 @@ export const CashierHeaderBar: React.FC<CashierHeaderBarProps> = ({
                   ? 'Klik untuk berpindah Outlet (Switch Outlet) atau ganti Terminal'
                   : 'Outlet Aktif'
               }
-              className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-blue-50/80 hover:bg-blue-100/80 border border-blue-200 text-xs transition cursor-pointer"
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs transition cursor-pointer"
             >
-              <Building2 className="w-3.5 h-3.5 text-blue-600" />
+              <Store className="w-3.5 h-3.5 text-[#2563EB]" />
               <span className="font-bold text-slate-900">
                 {active_outlet?.name ?? 'Pilih Outlet'}
               </span>
@@ -335,54 +331,34 @@ export const CashierHeaderBar: React.FC<CashierHeaderBarProps> = ({
             type="button"
             onClick={onOpenEmployeeShiftModal}
             title={session.active_employee_shift ? 'Shift Operasional Aktif (Klik untuk ubah/lihat)' : 'Belum Check-in Shift Operasional'}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-bold transition cursor-pointer ${
+            className={`hidden md:flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition cursor-pointer ${
               session.active_employee_shift
-                ? 'bg-blue-50 border-blue-200 text-blue-900 hover:bg-blue-100/80 shadow-xs'
+                ? 'bg-slate-50 border-slate-200 text-slate-800 hover:bg-slate-100'
                 : 'bg-amber-50 border-amber-300 text-amber-900 hover:bg-amber-100 animate-pulse'
             }`}
           >
-            <Clock className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-            <div className="text-left leading-tight">
-              {session.active_employee_shift ? (
-                <>
-                  <div className="font-bold flex items-center gap-1">
-                    <span>{session.user.username}</span>
-                    <span>•</span>
-                    <span>{session.active_employee_shift.shift_name}</span>
-                  </div>
-                  <div className="text-[10px] font-medium text-blue-600">
-                    {session.active_employee_shift.work_date}
-                    {session.active_employee_shift.is_backdated ? ' (Backdate)' : ''}
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="text-amber-800">Check-in Shift</div>
-                  <div className="text-[10px] text-amber-600 font-medium">Klik untuk pilih shift</div>
-                </>
-              )}
-            </div>
+            <Clock className="w-3.5 h-3.5 text-[#2563EB] shrink-0" />
+            <span className="truncate max-w-[140px]">
+              {session.active_employee_shift
+                ? session.active_employee_shift.shift_name
+                : 'Check-in Shift'}
+            </span>
           </button>
 
           {/* Cashier Cash Drawer Shift Status Pill */}
           <button
             type="button"
             onClick={onOpenShiftModal}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-bold transition cursor-pointer ${
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-bold transition cursor-pointer ${
               active_shift
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100/80'
+                ? 'bg-emerald-50 border-emerald-200 text-[#059669] hover:bg-emerald-100/80'
                 : 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100'
             }`}
           >
             {active_shift ? (
               <>
-                <Wallet className="w-3.5 h-3.5 text-emerald-600" />
-                <div className="text-left leading-tight">
-                  <div className="tabular-nums">Kas: {formatIDR(expectedCash)}</div>
-                  <div className="text-[10px] font-medium text-emerald-600">
-                    {active_shift.shift_number}
-                  </div>
-                </div>
+                <Wallet className="w-3.5 h-3.5 text-[#059669]" />
+                <span className="tabular-nums font-extrabold">Kas: {formatIDR(expectedCash)}</span>
               </>
             ) : (
               <>

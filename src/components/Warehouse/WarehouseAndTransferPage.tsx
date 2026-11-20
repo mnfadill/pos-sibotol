@@ -16,6 +16,7 @@ import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Card, StatCard } from '../ui/Card';
 import { Modal } from '../ui/Modal';
+import { SearchableSelect } from '../ui/SearchableSelect';
 import { useToast } from '../ui/ToastProvider';
 
 interface WarehouseWithInventory extends WarehouseInfo {
@@ -228,6 +229,11 @@ export const WarehouseAndTransferPage: React.FC<Props> = ({
     p.variants.map((v) => ({
       id: v.id,
       label: `${p.name} - ${v.name} (${v.sku})`,
+      productName: p.name,
+      variantName: v.name,
+      sku: v.sku,
+      barcode: v.barcode ?? '',
+      stock: `${formatQty(v.stock_quantity)} ${p.unit || 'PCS'}`,
     })),
   );
 
@@ -500,19 +506,20 @@ export const WarehouseAndTransferPage: React.FC<Props> = ({
         <form onSubmit={handleRequestTransfer} className="space-y-4">
           <div>
             <label className="block text-xs font-bold text-slate-700 mb-1">
-              Pilih Produk / SKU
+              Pilih Produk / Varian (Ketik Nama / SKU atau Klik Daftar)
             </label>
-            <select
+            <SearchableSelect
               value={selectedVariantId}
-              onChange={(e) => setSelectedVariantId(Number(e.target.value))}
-              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 text-sm bg-white"
-            >
-              {allVariants.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.label}
-                </option>
-              ))}
-            </select>
+              onChange={(val) => setSelectedVariantId(val)}
+              placeholder="Ketik nama barang / SKU atau pilih dari daftar..."
+              options={allVariants.map((v) => ({
+                value: v.id,
+                label: `${v.productName} (${v.variantName})`,
+                sublabel: `SKU: ${v.sku}`,
+                badge: `Stok Cabang: ${v.stock}`,
+                searchKeywords: `${v.productName} ${v.variantName} ${v.sku} ${v.barcode}`,
+              }))}
+            />
           </div>
 
           <div>

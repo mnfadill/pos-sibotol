@@ -34,8 +34,19 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
   const grandTotalNum = parseFloat(order.grand_total || '0');
   const paidTotalNum = parseFloat(order.paid_total || '0');
   const changeTotalNum = parseFloat(order.change_total || '0');
-  const netPaidNum = Math.max(0, paidTotalNum - changeTotalNum);
-  const debtBalanceNum = Math.max(0, grandTotalNum - netPaidNum);
+  const netPaidNum = order.invoice
+    ? parseFloat(order.invoice.paid_total || '0')
+    : Math.max(0, paidTotalNum - changeTotalNum);
+  const debtBalanceNum = order.invoice
+    ? parseFloat(order.invoice.balance_due || '0')
+    : Math.max(0, grandTotalNum - netPaidNum);
+  const paymentStatusLabel =
+    debtBalanceNum <= 0
+      ? 'LUNAS (PAID)'
+      : netPaidNum > 0
+        ? 'DP / SEBAGIAN (PARTIAL)'
+        : 'TEMPO (UNPAID)';
+  const dueDateDisplay = order.invoice?.due_date || order.due_date || null;
 
   return (
     <Modal
@@ -112,6 +123,12 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
               <span className="text-slate-500">No. Struk</span>
               <span className="font-bold">{order.order_number}</span>
             </div>
+            {order.invoice && (
+              <div className="flex justify-between">
+                <span className="text-slate-500">No. Invoice</span>
+                <span className="font-bold text-blue-700">{order.invoice.invoice_number}</span>
+              </div>
+            )}
             <div className="flex justify-between">
               <span className="text-slate-500">Waktu</span>
               <span>{formatDateTime(order.completed_at ?? order.created_at)}</span>
@@ -126,13 +143,36 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                 <span>{order.terminal.code}</span>
               </div>
             )}
-            {(order.customer_name || order.table_label) && (
+            {(order.customer_name || order.customer || order.table_label) && (
               <div className="flex justify-between">
-                <span className="text-slate-500">Pelanggan / Meja</span>
-                <span className="font-bold">
-                  {order.customer_name || 'Walk-in'}
-                  {order.table_label ? ` (${order.table_label})` : ''}
+                <span className="text-slate-500">Pelanggan</span>
+                <span className="font-bold text-right">
+                  {order.customer?.name || order.customer_name || 'Walk-in'}
+                  {order.customer?.code ? ` (${order.customer.code})` : ''}
+                  {order.table_label ? ` • ${order.table_label}` : ''}
                 </span>
+              </div>
+            )}
+            {(order.customer?.phone || order.customer_phone) && (
+              <div className="flex justify-between">
+                <span className="text-slate-500">No. HP</span>
+                <span>{order.customer?.phone || order.customer_phone}</span>
+              </div>
+            )}
+            <div className="flex justify-between">
+              <span className="text-slate-500">Status Bayar</span>
+              <span
+                className={`font-extrabold ${
+                  debtBalanceNum > 0 ? 'text-amber-700' : 'text-emerald-700'
+                }`}
+              >
+                {paymentStatusLabel}
+              </span>
+            </div>
+            {dueDateDisplay && debtBalanceNum > 0 && (
+              <div className="flex justify-between">
+                <span className="text-slate-500">Jatuh Tempo</span>
+                <span className="font-bold text-rose-700">{dueDateDisplay}</span>
               </div>
             )}
           </div>
@@ -213,9 +253,13 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                 <span className="font-semibold">{formatIDR(0)}</span>
               </div>
             )}
+            <div className="flex justify-between font-semibold pt-0.5">
+              <span className="text-slate-600">Total Dibayar</span>
+              <span className="text-emerald-700">{formatIDR(netPaidNum)}</span>
+            </div>
             {debtBalanceNum > 0 ? (
               <div className="flex justify-between font-bold text-amber-700 pt-0.5">
-                <span>SISA HUTANG (PIUTANG)</span>
+                <span>SISA PIUTANG</span>
                 <span>{formatIDR(debtBalanceNum)}</span>
               </div>
             ) : (

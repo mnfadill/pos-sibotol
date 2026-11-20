@@ -27,6 +27,20 @@ class OutletInventory extends Model
 
     protected $fillable = ['outlet_id', 'warehouse_id', 'product_id', 'product_variant_id', 'quantity', 'reorder_level', 'version', 'last_counted_at'];
 
+    protected static function booted(): void
+    {
+        $flush = static function (self $model): void {
+            if ($model->outlet_id) {
+                \App\Services\PosCatalogCacheService::bumpStock(
+                    (int) $model->outlet_id,
+                    $model->warehouse_id ? (int) $model->warehouse_id : null,
+                );
+            }
+        };
+        static::saved($flush);
+        static::deleted($flush);
+    }
+
     protected function casts(): array
     {
         return [

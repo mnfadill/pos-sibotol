@@ -499,6 +499,169 @@ final class PricingAndCostService
     }
 
     /**
+     * Batch-resolve all Tier prices for a collection of ProductVariants in a single pass
+     * (eliminates N+1 queries on catalog loading — only 2–3 bulk queries total regardless of page size).
+     *
+     * @param  \Illuminate\Support\Collection<int, ProductVariant>  $variants
+     * @param  \Illuminate\Support\Collection<int, ProductOutletSetting>  $outletSettingsByVariantId
+     * @return array<int, array<string, string>>  Map of [variant_id => [tier_code_or_id => price]]
+     */
+    public function resolveAllTierPricesBatch(
+        \Illuminate\Support\Collection $variants,
+        Outlet $outlet,
+        \Illuminate\Support\Collection $outletSettingsByVariantId,
+    ): array {
+        if ($variants->isEmpty()) {
+            return [];
+        }
+
+        $orgId = (int) $outlet->organization_id;
+        $today = CarbonImmutable::today()->toDateString();
+        $productIds = $variants->pluck('product_id')->unique()->values()->all();
+        $variantIds = $variants->pluck('id')->unique()->values()->all();
+
+        // 1. Cached active tiers for this organization (5 min TTL)
+        $dbTiers = \Illuminate\Support\Facades\Cache::remember(
+            "pos_org_{$orgId}_active_tiers",
+            300,
+            static fn () => Tier::query()
+                ->where('organization_id', $orgId)
+                ->where('status', 'active')
+                ->get(['id', 'code'])
+                ->all(),
+        );
+
+        // 2. Single bulk query for dynamic ProductTierPrice overrides for products on this page
+        $tierPriceRows = ProductTierPrice::query()
+            ->whereIn('product_id', $productIds)
+            ->where('status', 'active')
+            ->where(static fn ($q) => $q->whereNull('effective_from')->orWhere('effective_from', '<=', $today))
+            ->where(static fn ($q) => $q->whereNull('effective_until')->orWhere('effective_until', '>=', $today))
+            ->orderByDesc('effective_from')
+            ->orderByDesc('id')
+            ->get(['product_id', 'product_variant_id', 'tier_id', 'price']);
+
+        // Index: [product_id][tier_id][variant_id|0] => price
+        $dynamicPriceMap = [];
+        foreach ($tierPriceRows as $row) {
+            $pId = (int) $row->product_id;
+            $tId = (int) $row->tier_id;
+            $vKey = $row->product_variant_id !== null ? (int) $row->product_variant_id : 0;
+            if (! isset($dynamicPriceMap[$pId][$tId][$vKey])) {
+                $dynamicPriceMap[$pId][$tId][$vKey] = bcadd((string) $row->price, '0', 2);
+            }
+        }
+
+        // 3. Single bulk query for active tier PriceLists + PriceListItems (only if any tier price list exists)
+        $activeTierPriceLists = \Illuminate\Support\Facades\Cache::remember(
+            "pos_org_{$orgId}_tier_price_lists_{$today}",
+            300,
+            static fn () => PriceList::query()
+                ->where('organization_id', $orgId)
+                ->where('is_active', true)
+                ->whereNull('customer_id')
+                ->whereIn('type', ['tier_b', 'member', 'silver', 'tier_c', 'reseller', 'gold', 'tier_d', 'wholesale', 'vip', 'platinum'])
+                ->where(static fn ($q) => $q->whereNull('start_date')->orWhere('start_date', '<=', $today))
+                ->where(static fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $today))
+                ->orderByDesc('priority')
+                ->get(['id', 'type'])
+                ->all(),
+        );
+
+        $priceListItemsByTypeVariant = [];
+        if (! empty($activeTierPriceLists)) {
+            $plIds = array_map(static fn ($pl): int => (int) $pl->id, $activeTierPriceLists);
+            $plTypeById = [];
+            foreach ($activeTierPriceLists as $pl) {
+                $plTypeById[(int) $pl->id] = strtolower((string) $pl->type);
+            }
+
+            $plItems = PriceListItem::query()
+                ->whereIn('price_list_id', $plIds)
+                ->whereIn('product_variant_id', $variantIds)
+                ->whereNull('product_unit_id')
+                ->where('min_qty', '<=', '1.000')
+                ->orderByDesc('min_qty')
+                ->get(['price_list_id', 'product_variant_id', 'price', 'discount_percent', 'discount_amount']);
+
+            foreach ($plItems as $item) {
+                $type = $plTypeById[(int) $item->price_list_id] ?? '';
+                $bucket = match (true) {
+                    in_array($type, ['tier_b', 'member', 'silver'], true) => 'B',
+                    in_array($type, ['tier_c', 'reseller', 'gold'], true) => 'C',
+                    in_array($type, ['tier_d', 'wholesale', 'vip', 'platinum'], true) => 'D',
+                    default => null,
+                };
+                if ($bucket !== null && ! isset($priceListItemsByTypeVariant[$bucket][(int) $item->product_variant_id])) {
+                    $priceListItemsByTypeVariant[$bucket][(int) $item->product_variant_id] = $this->scalePriceListItem($item, null, '1.000');
+                }
+            }
+        }
+
+        // 4. Compute prices in-memory for every variant (0 extra queries!)
+        $result = [];
+        foreach ($variants as $v) {
+            /** @var ProductOutletSetting|null $setting */
+            $setting = $outletSettingsByVariantId->get($v->id);
+            $effectiveRetail = ($setting !== null && $setting->price_override !== null && (float) $setting->price_override > 0)
+                ? bcadd((string) $setting->price_override, '0', 2)
+                : bcadd((string) $v->price, '0', 2);
+
+            $priceA = $effectiveRetail;
+
+            $priceB = ($v->member_price !== null && (float) $v->member_price > 0)
+                ? bcadd((string) $v->member_price, '0', 2)
+                : ($priceListItemsByTypeVariant['B'][$v->id]
+                    ?? bcsub($effectiveRetail, bcmul($effectiveRetail, '0.05', 2), 2));
+
+            $priceC = ($v->reseller_price !== null && (float) $v->reseller_price > 0)
+                ? bcadd((string) $v->reseller_price, '0', 2)
+                : ($priceListItemsByTypeVariant['C'][$v->id]
+                    ?? bcsub($effectiveRetail, bcmul($effectiveRetail, '0.10', 2), 2));
+
+            $priceD = ($v->wholesale_price !== null && (float) $v->wholesale_price > 0)
+                ? bcadd((string) $v->wholesale_price, '0', 2)
+                : ($priceListItemsByTypeVariant['D'][$v->id]
+                    ?? bcsub($effectiveRetail, bcmul($effectiveRetail, '0.15', 2), 2));
+
+            $prices = [
+                'A' => $priceA,
+                'B' => $priceB,
+                'C' => $priceC,
+                'D' => $priceD,
+            ];
+
+            foreach ($dbTiers as $t) {
+                $tId = (int) $t->id;
+                $tCode = strtoupper((string) $t->code);
+
+                // Priority 1: Dynamic ProductTierPrice for this variant or product
+                $resolved = $dynamicPriceMap[$v->product_id][$tId][$v->id]
+                    ?? $dynamicPriceMap[$v->product_id][$tId][0]
+                    ?? null;
+
+                // Priority 2: Fallback to Master A/B/C/D tier mapping
+                if ($resolved === null) {
+                    $mappedLetter = match ($tCode) {
+                        'TIER_2', 'B', 'TIER_B', 'MEMBER', 'LANGGANAN', 'SILVER' => 'B',
+                        'TIER_3', 'C', 'TIER_C', 'RESELLER', 'WARUNG', 'MITRA', 'GOLD' => 'C',
+                        'TIER_4', 'D', 'TIER_D', 'WHOLESALE', 'GROSIR', 'VIP', 'PLATINUM' => 'D',
+                        default => 'A',
+                    };
+                    $resolved = $prices[$mappedLetter];
+                }
+
+                $prices[$t->code] = $resolved;
+                $prices[(string) $tId] = $resolved;
+            }
+
+            $result[$v->id] = $prices;
+        }
+
+        return $result;
+    }
+
+    /**
      * Resolve all 4 Master Customer Tier prices for a variant.
      *
      * @return array{
@@ -548,7 +711,9 @@ final class PricingAndCostService
         ?int $userId = null,
         ?string $reason = null,
     ): ProductVariant {
-        $variant->loadMissing('product');
+        $variant->loadMissing([
+            'product' => static fn ($q) => $q->withoutGlobalScopes()->withTrashed(),
+        ]);
 
         $oldAvg = bccomp((string) ($variant->average_cost ?? '0'), '0', 2) > 0
             ? bcadd((string) $variant->average_cost, '0', 2)
@@ -576,7 +741,7 @@ final class PricingAndCostService
 
         if (bccomp($oldAvg, $newAvg, 2) !== 0) {
             ProductPriceHistory::query()->create([
-                'organization_id' => $variant->product->organization_id,
+                'organization_id' => $variant->product?->organization_id ?? $variant->organization_id,
                 'product_id' => $variant->product_id,
                 'product_variant_id' => $variant->id,
                 'outlet_id' => $outletId,
@@ -590,7 +755,10 @@ final class PricingAndCostService
             ]);
         }
 
-        return $variant->fresh();
+        return ProductVariant::query()
+            ->withoutGlobalScopes()
+            ->withTrashed()
+            ->find($variant->id) ?? $variant;
     }
 
     /**
